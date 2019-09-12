@@ -1,0 +1,804 @@
+---
+title: "GO enrichment analysis for differentially expressed genes"
+author: "Alayna Mead"
+date: "April 3, 2019"
+output: html_document
+---
+
+```{r setup}
+
+library(goseq)
+library(GO.db)
+library(ComplexHeatmap)
+library(circlize)
+library(RColorBrewer)
+library(GO.db)
+
+# get files
+
+# gene length
+gene.lens <- read.csv('data/gene_lengths.txt', header = F, check.names = F)
+colnames(gene.lens) <- c('gene', 'length')
+gene.lens$length <- as.numeric(gene.lens$length)
+rownames(gene.lens) <- gene.lens$gene
+
+# gene annotation (named 'gene.info')
+load(file = 'data/gene_Pfam_and_TAIR_info_dataframe.Rdata')
+
+# GO info
+load('data/all_genes_and_GO_terms_R_list_sorted_by_GO_term.Rdata')
+load('data/all_genes_and_GO_terms_R_list.Rdata')
+load('data/gene_lengths_sequenced_genes_only.Rdata')
+
+# list of DE genes (named 'genes.sig.___')
+load('data/significant_DE_gene_lists.Rdata')
+
+# get gene lists - named like 'genes.sig.up/down.group'
+load("data/significant_DE_gene_lists_by_direction.Rdata")
+
+```
+
+
+```{r check_files}
+
+hist(gene.lens$length, breaks = 'fd') # mostly zero length because of noncoding regions
+hist(gene.lens$length[gene.lens$length > 0], breaks = 'fd') # without 0 length genes
+
+# check numbers
+# number of genes
+dim(gene.info) # 19459     5
+dim(gene.lens) # 83644     2
+
+# number of non-annotated genes (in list of genes included in DE analysis)
+sum(gene.info$tair_id == 'none') # 11515
+sum(gene.info$pfam_id == 'none') # 11363
+sum(gene.info$pfam_id == 'none' & gene.info$tair_id == 'none') # 8123
+
+# number of genes with length = 0 (because unannotated)
+sum(gene.lens$length == 0) # 55383
+# with length = 0 that are also in DE gene dataset
+# this is fewer than non-annotated genes
+sum(gene.lens[gene.lens$gene %in% rownames(gene.info),][,2] == 0) # 4971
+
+# how many length 0 genes are actually unannotated
+g.unan <- rownames(gene.info[gene.info$pfam_id == 'none' & gene.info$tair_id == 'none',]) # unannotated
+g.lz <- rownames(gene.lens[gene.lens$length==0,]) # length 0
+# check
+head(g.unan)
+gene.info[1:10,c(1,4)]
+
+# number length 0 genes in unannotated genes
+length(g.lz) # 55383
+length(g.lz %in% g.unan) # 55383
+
+# all length 0 genes are unannotated
+
+```
+
+
+```{r all_DE_genes_together_setup}
+
+# setup for GOseq input
+
+# combine vectors of DE genes into one list for easy looping
+de.genes.all <- list(genes.sig.treatment, genes.sig.FH, genes.sig.MC, genes.sig.RD, genes.sig.PL)
+names(de.genes.all) <- c('treatment', 'FH', 'MC', 'RD', 'PL')
+
+# for each list of DE genes, set up vector with '1' for DE, '0' for not
+
+# get vector of all genes in experiment
+gene.vector <- list()
+for(n in 1:length(de.genes.all)){
+  
+  gene.vector[[n]] <- as.integer(rownames(gene.info) %in% de.genes.all[[n]])
+  names(gene.vector[[n]]) <- rownames(gene.info)
+  print(sum(gene.vector[[n]]))
+  
+}
+
+names(gene.vector) <- c('treatment', 'FH', 'MC', 'RD', 'PL')
+
+head(gene.vector$treatment)
+
+```
+
+```{r all_DE_genes_together_analysis}
+
+# GO enrichment analysis using GOseq to find over/under-represented GO terms in each set of DE genes. This groups all DE genes together (both upregulated and downregulated).
+
+names(gene.vector)
+# [1] "treatment" "FH"        "MC"        "RD"        "PL" 
+
+go.results <- list()
+
+par(mfrow = c(2,2))
+for(n in 1:length(gene.vector)){
+  
+  pwf <- nullp(DEgenes =  gene.vector[[n]], bias.data = gene.lens.seq)
+  go.results[[n]] <- goseq(pwf, gene2cat = go.all.list)
+  
+}
+
+names(go.results) <- c('treatment', 'FH', 'MC', 'RD', 'PL')
+
+head(go.results$treatment)
+head(go.results$FH)
+head(go.results$MC)
+head(go.results$RD)
+head(go.results$PL)
+
+# pval adjustment - only adjust p-values for either
+# over or underrepresentation for each GO term, whichever
+# has lowest p-value
+
+for(n in 1:length(go.results)){
+  
+  go.results[[n]]$adjusted_over_represented_pvalue <- NA
+  go.results[[n]]$adjusted_under_represented_pvalue <- NA
+  
+  # get index for GO terms which are more likely to be 
+  # over or underrepresented
+  over.index <- which(go.results[[n]]$over_represented_pvalue <= go.results[[n]]$under_represented_pvalue)
+  under.index <- which(go.results[[n]]$over_represented_pvalue >= go.results[[n]]$under_represented_pvalue)
+  
+  # adjust pvalues for GO terms with the above indices
+  go.results[[n]]$adjusted_over_represented_pvalue[over.index] <- p.adjust(go.results[[n]]$over_represented_pvalue[over.index], method = 'BH')
+  go.results[[n]]$adjusted_under_represented_pvalue[under.index] <- p.adjust(go.results[[n]]$under_represented_pvalue[under.index], method = 'BH')
+  
+}
+
+
+# look at pvalue distributions
+
+par(mfrow = c(2,2))
+for(n in 1:length(go.results)){
+  hist(go.results[[n]]$over_represented_pvalue, main = names(go.results)[n], breaks = 20)
+  hist(go.results[[n]]$under_represented_pvalue, breaks = 20, main = '')
+  
+  over.index <- which(go.results[[n]]$over_represented_pvalue <= go.results[[n]]$under_represented_pvalue)
+  under.index <- which(go.results[[n]]$over_represented_pvalue >= go.results[[n]]$under_represented_pvalue)
+  
+  hist(go.results[[n]]$over_represented_pvalue[over.index], breaks = 20, main = '')
+  hist(go.results[[n]]$under_represented_pvalue[under.index], breaks = 20, main = '')
+  
+}
+
+
+# output results
+for(n in 1:length(go.results)){
+  
+  write.table(go.results[[n]], file = paste('output/GOseq_results_', names(go.results)[[n]], '.txt', sep = ''), quote = F, sep = '\t', row.names = F)
+  
+}
+
+
+```
+
+```{r up_and_downreg_genes_setup}
+
+# setup for GOseq input
+
+# combine vectors of DE genes into one list for easy looping
+de.genes.up <- list(genes.sig.up.treatment, genes.sig.up.FH, genes.sig.up.MC, genes.sig.up.RD, genes.sig.up.PL)
+names(de.genes.up) <- c('treatment', 'FH', 'MC', 'RD', 'PL')
+de.genes.down <- list(genes.sig.down.treatment, genes.sig.down.FH, genes.sig.down.MC, genes.sig.down.RD, genes.sig.down.PL)
+names(de.genes.down) <- c('treatment', 'FH', 'MC', 'RD', 'PL')
+
+
+# for each list of DE genes, set up vector with '1' for DE, '0' for not
+
+# get vector of all genes in experiment (upregulated)
+gene.up.vector <- list()
+for(n in 1:length(de.genes.up)){
+  
+  gene.up.vector[[n]] <- as.integer(rownames(gene.info) %in% de.genes.up[[n]])
+  names(gene.up.vector[[n]]) <- rownames(gene.info)
+  print(sum(gene.up.vector[[n]]))
+  
+}
+
+names(gene.up.vector) <- c('treatment', 'FH', 'MC', 'RD', 'PL')
+
+head(gene.up.vector$treatment)
+
+```
+
+```{r up_and_downreg_genes_analysis}
+
+# GO enrichment analysis using GOseq to find over/under-represented GO terms in each set of DE genes. This separates DE genes by whether they're upregulated or downregulated.
+
+# get vector of all genes in experiment (downregulated)
+gene.down.vector <- list()
+for(n in 1:length(de.genes.down)){
+  
+  gene.down.vector[[n]] <- as.integer(rownames(gene.info) %in% de.genes.down[[n]])
+  names(gene.down.vector[[n]]) <- rownames(gene.info)
+  print(sum(gene.down.vector[[n]]))
+  
+}
+
+names(gene.down.vector) <- c('treatment', 'FH', 'MC', 'RD', 'PL')
+
+head(gene.down.vector$treatment)
+
+# do analysis
+
+# upregulated
+go.up.results <- list()
+
+par(mfrow = c(2,2))
+for(n in 1:length(gene.up.vector)){
+  
+  pwf <- nullp(DEgenes =  gene.up.vector[[n]], bias.data = gene.lens.seq)
+  go.up.results[[n]] <- goseq(pwf, gene2cat = go.all.list)
+  
+}
+
+names(go.up.results) <- c('treatment', 'FH', 'MC', 'RD', 'PL')
+
+go.up.results$treatment[1:20,]
+go.up.results$FH[1:20,]
+go.up.results$MC[1:20,]
+go.up.results$RD[1:20,]
+go.up.results$PL[1:20,]
+
+# downreglated
+go.down.results <- list()
+
+par(mfrow = c(2,2))
+for(n in 1:length(gene.down.vector)){
+  
+  pwf <- nullp(DEgenes =  gene.down.vector[[n]], bias.data = gene.lens.seq)
+  go.down.results[[n]] <- goseq(pwf, gene2cat = go.all.list)
+  
+}
+
+names(go.down.results) <- c('treatment', 'FH', 'MC', 'RD', 'PL')
+
+go.down.results$treatment[1:20,]
+go.down.results$FH[1:20,]
+go.down.results$MC[1:20,]
+go.down.results$RD[1:20,]
+go.down.results$PL[1:20,]
+
+
+# pval adjustment - only adjust p-values for either
+# over or underrepresentation for each GO term, whichever
+# has lowest p-value
+
+# adjust upreg
+for(n in 1:length(go.up.results)){
+  
+  go.up.results[[n]]$adjusted_over_represented_pvalue <- NA
+  go.up.results[[n]]$adjusted_under_represented_pvalue <- NA
+  
+  # get index for GO terms which are more likely to be 
+  # over or underrepresented
+  over.index <- which(go.up.results[[n]]$over_represented_pvalue <= go.up.results[[n]]$under_represented_pvalue)
+  under.index <- which(go.up.results[[n]]$over_represented_pvalue >= go.up.results[[n]]$under_represented_pvalue)
+  
+  # adjust pvalues for GO terms with the above indices
+  go.up.results[[n]]$adjusted_over_represented_pvalue[over.index] <- p.adjust(go.up.results[[n]]$over_represented_pvalue[over.index], method = 'BH')
+  go.up.results[[n]]$adjusted_under_represented_pvalue[under.index] <- p.adjust(go.up.results[[n]]$under_represented_pvalue[under.index], method = 'BH')
+  
+}
+
+# adjust downreg
+for(n in 1:length(go.down.results)){
+  
+  go.down.results[[n]]$adjusted_over_represented_pvalue <- NA
+  go.down.results[[n]]$adjusted_under_represented_pvalue <- NA
+  
+  # get index for GO terms which are more likely to be 
+  # over or underrepresented
+  over.index <- which(go.down.results[[n]]$over_represented_pvalue <= go.down.results[[n]]$under_represented_pvalue)
+  under.index <- which(go.down.results[[n]]$over_represented_pvalue >= go.down.results[[n]]$under_represented_pvalue)
+  
+  # adjust pvalues for GO terms with the above indices
+  go.down.results[[n]]$adjusted_over_represented_pvalue[over.index] <- p.adjust(go.down.results[[n]]$over_represented_pvalue[over.index], method = 'BH')
+  go.down.results[[n]]$adjusted_under_represented_pvalue[under.index] <- p.adjust(go.down.results[[n]]$under_represented_pvalue[under.index], method = 'BH')
+  
+}
+
+
+# look at pvalue distributions
+# upreg
+
+par(mfrow = c(2,2))
+for(n in 1:length(go.up.results)){
+  hist(go.up.results[[n]]$over_represented_pvalue, main = names(go.up.results)[n], breaks = 20)
+  hist(go.up.results[[n]]$under_represented_pvalue, breaks = 20, main = '')
+  
+  over.index <- which(go.up.results[[n]]$over_represented_pvalue <= go.up.results[[n]]$under_represented_pvalue)
+  under.index <- which(go.up.results[[n]]$over_represented_pvalue >= go.up.results[[n]]$under_represented_pvalue)
+  
+  hist(go.up.results[[n]]$over_represented_pvalue[over.index], breaks = 20, main = '')
+  hist(go.up.results[[n]]$under_represented_pvalue[under.index], breaks = 20, main = '')
+  
+}
+
+# downreg
+par(mfrow = c(2,2))
+for(n in 1:length(go.down.results)){
+  hist(go.down.results[[n]]$over_represented_pvalue, main = names(go.down.results)[n], breaks = 20)
+  hist(go.down.results[[n]]$under_represented_pvalue, breaks = 20, main = '')
+  
+  over.index <- which(go.down.results[[n]]$over_represented_pvalue <= go.down.results[[n]]$under_represented_pvalue)
+  under.index <- which(go.down.results[[n]]$over_represented_pvalue >= go.down.results[[n]]$under_represented_pvalue)
+  
+  hist(go.down.results[[n]]$over_represented_pvalue[over.index], breaks = 20, main = '')
+  hist(go.down.results[[n]]$under_represented_pvalue[under.index], breaks = 20, main = '')
+  
+}
+
+# output results
+
+# upreg
+for(n in 1:length(go.up.results)){
+  
+  write.table(go.up.results[[n]], file = paste('output/GOseq_results_', names(go.up.results)[[n]], '_upregulated.txt', sep = ''), quote = F, sep = '\t', row.names = F)
+  
+}
+
+# downreg
+for(n in 1:length(go.down.results)){
+  
+  write.table(go.down.results[[n]], file = paste('output/GOseq_results_', names(go.down.results)[[n]], '_downregulated.txt', sep = ''), quote = F, sep = '\t', row.names = F)
+  
+}
+
+save(go.down.results, file = 'output/GO_analysis_downregulated_results.Rdata')
+save(go.up.results, file = 'output/GO_analysis_upregulated_results.Rdata')
+
+```
+
+
+```{r plots_load_data}
+
+expr <- read.csv('data/gene_expression_normalized_voom_batch_effects_removed.csv', row.names = 1, check.names = F)
+expr <- expr[,colnames(expr) != '069-15']
+
+des <- read.csv('data/experiment_design.csv')
+des$site <- factor(des$site, levels = c('MACR', 'TEJO', 'HUNT', 'CENT', 'PLAT', 'REDI'), labels = c('MC', 'FT', 'FH', 'CV', 'PL', 'RD'))
+des$interaction <- interaction(des$treatment, des$site)
+des <- des[des$sample != '069-15',]
+des <- des[order(des$sample),]
+
+# load('/home/alayna/Documents/research/projects/2015_lobata_drought_RNAseq/analysis_RNAseq/analysis_all_summer_2018/DE_2019-04-02/GO_analysis_upregulated_results.Rdata')
+# load('/home/alayna/Documents/research/projects/2015_lobata_drought_RNAseq/analysis_RNAseq/analysis_all_summer_2018/DE_2019-04-02/GO_analysis_downregulated_results.Rdata')
+# 
+# load('/home/alayna/Documents/research/projects/2015_lobata_drought_RNAseq/analysis_RNAseq/analysis_all_summer_2018/GO_analysis/all_genes_and_GO_terms_R_list_sorted_by_GO_term.Rdata')
+
+```
+
+
+```{r plot_GO_expression}
+
+# plot average expression for each significant GO term by treatment/site
+
+# get 'significant' GO terms
+# in groups of downregulated genes, only MC had some significant GO terms
+go.results.sig <- list()
+for(n in 1:length(go.up.results)){
+  go.results.sig[[n]] <- go.up.results[[n]][which(go.up.results[[n]]$adjusted_over_represented_pvalue <= 0.05), 1]
+}
+# add MC downreg
+go.results.sig[[length(go.up.results)+1]] <- go.down.results$MC[which(go.down.results$MC$adjusted_over_represented_pvalue <= 0.05), 1]
+# add names of GO lists
+names(go.results.sig) <- c(paste(names(go.up.results), 'up', sep = '.'), 'MC.down')
+
+par(mfrow = c(1,1), las = 2)
+
+# function for plotting average expression for all genes with a 
+# given GO term, sorted by site and treatment
+# each point is an individual
+
+# function for plotting a GO term - average expression for
+# all genes with a GO term (for each individual), then plot
+# by site and treatment
+go.plot <- function(go_term, ...){
+  
+  # get expression of all expressed genes for GO term 
+  genes <- unlist(go.all.list_by_genes[go_term])
+  genes <- genes[genes %in% rownames(expr)]
+  go.expr <- expr[genes,]
+  
+  # average GO expression values by sample
+  avg.go <- colMeans(go.expr)
+  
+  # plot - stripchart with lines for avg change
+    int.avg.go <- sapply(1:length(levels(des$interaction)), function(x) mean(avg.go[des$interaction == levels(des$interaction)[x]]))
+  stripchart(avg.go ~ des$treatment*des$site,
+             vertical = T, pch = 16,
+             col = c('dodgerblue2', 'firebrick1'),
+             method = 'jitter',
+             group.names = c("MC control", "MC treatment", "FT control", "FT treatment", "FH control",  "FH treatment", "CV control", "CV treatment", "PL control", "PL treatment", "RD control", "RD treatment"),
+             main = paste(select(GO.db, keys=go_term, columns="TERM",keytype="GOID")[,2], '\n(', nrow(go.expr), ' genes)', sep = ''),
+             cex.main = 0.9,
+             ylab = 'average expression of genes',
+             ...)
+  a <- sapply(seq(1,12, 2), function(X) lines(x = c(X,X+1), y = int.avg.go[c(X,X+1)], type = 'b', pch = 4)) # sorry this is ugly - this prevents printing a list of NAs
+  
+}
+
+# plot some significant GO terms
+
+# MC - upregulated
+
+# top 15 as single graph
+top <- 15
+for(n in 1:top){
+  
+  #png(file = paste('plots/avg_GO_expression_MC_upregulated_', n, '.png', sep = ''), res = 300, width = 6, height = 5, units = 'in')
+  par(mfrow = c(1,1), las = 2, mar = c(5.5,4,4,2)+0.1)
+  go.plot(go.results.sig$MC.up[n])
+ # dev.off()
+  
+}
+
+
+# MC downregulated
+top <- 4
+for(n in 1:top){
+  
+  #png(file = paste('plots/avg_GO_expression_MC_downregulated_', n, '.png', sep = ''), res = 300, width = 6, height = 5, units = 'in')
+  par(mfrow = c(1,1), las = 2, mar = c(5.5,4,4,2)+0.1)
+  go.plot(go.results.sig$MC.down[n])
+ # dev.off()
+  
+}
+
+# FH upregulated - no significantly enriched GO terms
+
+# RD upregulated
+top <- 1:15
+top <- top[-4] # skip 4 because GO term not used
+
+for(n in top){
+  
+  #png(file = paste('plots/avg_GO_expression_RD_upregulated_', n, '.png', sep = ''), res = 300, width = 6, height = 5, units = 'in')
+  par(mfrow = c(1,1), las = 2, mar = c(5.5,4,4,2)+0.1)
+  go.plot(go.results.sig$RD[n])
+  #dev.off()
+  
+}
+
+# PL upregulated
+top <- 1:15
+
+for(n in top){
+  
+  #png(file = paste('plots/avg_GO_expression_PL_upregulated_', n, '.png', sep = ''), res = 300, width = 6, height = 5, units = 'in')
+  par(mfrow = c(1,1), las = 2, mar = c(5.5,4,4,2)+0.1)
+  go.plot(go.results.sig$PL[n])
+  #dev.off()
+  
+}
+
+# treatment
+
+# top 15 as single graph
+top <- 1:16
+top <- top[-6] # remove # 6, old GO term
+
+for(n in top){
+  
+  #png(file = paste('plots/avg_GO_expression_treatment_upregulated_', n, '.png', sep = ''), res = 300, width = 6, height = 5, units = 'in')
+  par(mfrow = c(1,1), las = 2, mar = c(6,4,4,2)+0.1)
+  go.plot(go.results.sig$treatment.up[n])
+  #dev.off()
+  
+}
+
+# plot some other interesting ones
+
+go.plot('GO:0080167')
+go.plot('GO:0009737')
+
+```
+
+
+```{r plot_GO_heatmaps}
+
+# plot avg expression for all genes with a GO term by population and treatment
+# easier to visualize many genes
+
+# make dataframes
+
+# treatment upregulated
+
+# treatment up
+go.expr.avg.treatment.up <- as.data.frame(matrix(nrow = length(go.results.sig$treatment.up), ncol = 12))
+rownames(go.expr.avg.treatment.up) <- go.results.sig$treatment.up
+colnames(go.expr.avg.treatment.up) <- levels(des$interaction)
+
+# add rownames - GO descriptions
+rn <- select(GO.db, keys=go.results.sig$treatment.up, columns="TERM",keytype="GOID")[,2]
+
+# get rid of obsolete GO terms (description is "NA")
+go.expr.avg.treatment.up <- go.expr.avg.treatment.up[! is.na(rn),]
+rownames(go.expr.avg.treatment.up) <- rn[! is.na(rn)]
+
+colnames(go.expr.avg.treatment.up) <- c("MC control", "MC treatment", "FT control", "FT treatment", "FH control",  "FH treatment", "CV control", "CV treatment", "PL control", "PL treatment", "RD control", "RD treatment")
+
+
+for(n in 1:length(go.results.sig$treatment.up)){
+ 
+  go_term <- go.results.sig$treatment.up[n]
+  
+  # get expression of all expressed genes for GO term 
+  genes <- unlist(go.all.list_by_genes[go_term])
+  genes <- genes[genes %in% rownames(expr)]
+  go.expr <- expr[genes,]
+  
+  # average GO expression values by sample
+  avg.go <- colMeans(go.expr)
+  
+  # write to df
+  for(i in 1:length(levels(des$interaction))){
+    group <- levels(des$interaction)[i]
+    go.expr.avg.treatment.up[n,i] <- mean(avg.go[which(des$interaction == group)])
+    
+  }
+}
+
+
+# MC up
+go.expr.avg.MC.up <- as.data.frame(matrix(nrow = length(go.results.sig$MC.up), ncol = 12))
+rownames(go.expr.avg.MC.up) <- go.results.sig$MC.up
+colnames(go.expr.avg.MC.up) <- levels(des$interaction)
+
+for(n in 1:length(go.results.sig$MC.up)){
+ 
+  go_term <- go.results.sig$MC.up[n]
+  
+  # get expression of all expressed genes for GO term 
+  genes <- unlist(go.all.list_by_genes[go_term])
+  genes <- genes[genes %in% rownames(expr)]
+  go.expr <- expr[genes,]
+  
+  # average GO expression values by sample
+  avg.go <- colMeans(go.expr)
+  
+  # write to df
+  for(i in 1:length(levels(des$interaction))){
+    group <- levels(des$interaction)[i]
+    go.expr.avg.MC.up[n,i] <- mean(avg.go[which(des$interaction == group)])
+    
+  }
+}
+
+
+# MC down
+go.expr.avg.MC.down <- as.data.frame(matrix(nrow = length(go.results.sig$MC.down), ncol = 12))
+rownames(go.expr.avg.MC.down) <- go.results.sig$MC.down
+colnames(go.expr.avg.MC.down) <- levels(des$interaction)
+
+for(n in 1:length(go.results.sig$MC.down)){
+ 
+  go_term <- go.results.sig$MC.down[n]
+  
+  # get expression of all expressed genes for GO term 
+  genes <- unlist(go.all.list_by_genes[go_term])
+  genes <- genes[genes %in% rownames(expr)]
+  go.expr <- expr[genes,]
+  
+  # average GO expression values by sample
+  avg.go <- colMeans(go.expr)
+  
+  # write to df
+  for(i in 1:length(levels(des$interaction))){
+    group <- levels(des$interaction)[i]
+    go.expr.avg.MC.down[n,i] <- mean(avg.go[which(des$interaction == group)])
+    
+  }
+}
+
+
+# RD up
+go.expr.avg.RD.up <- as.data.frame(matrix(nrow = length(go.results.sig$RD.up), ncol = 12))
+rownames(go.expr.avg.RD.up) <- go.results.sig$RD.up
+colnames(go.expr.avg.RD.up) <- levels(des$interaction)
+
+for(n in 1:length(go.results.sig$RD.up)){
+ 
+  go_term <- go.results.sig$RD.up[n]
+  
+  # get expression of all expressed genes for GO term 
+  genes <- unlist(go.all.list_by_genes[go_term])
+  genes <- genes[genes %in% rownames(expr)]
+  go.expr <- expr[genes,]
+  
+  # average GO expression values by sample
+  avg.go <- colMeans(go.expr)
+  
+  # write to df
+  for(i in 1:length(levels(des$interaction))){
+    group <- levels(des$interaction)[i]
+    go.expr.avg.RD.up[n,i] <- mean(avg.go[which(des$interaction == group)])
+    
+  }
+}
+
+# PL up
+go.expr.avg.PL.up <- as.data.frame(matrix(nrow = length(go.results.sig$PL.up), ncol = 12))
+rownames(go.expr.avg.PL.up) <- go.results.sig$PL.up
+colnames(go.expr.avg.PL.up) <- levels(des$interaction)
+
+for(n in 1:length(go.results.sig$PL.up)){
+ 
+  go_term <- go.results.sig$PL.up[n]
+  
+  # get expression of all expressed genes for GO term 
+  genes <- unlist(go.all.list_by_genes[go_term])
+  genes <- genes[genes %in% rownames(expr)]
+  go.expr <- expr[genes,]
+  
+  # average GO expression values by sample
+  avg.go <- colMeans(go.expr)
+  
+  # write to df
+  for(i in 1:length(levels(des$interaction))){
+    group <- levels(des$interaction)[i]
+    go.expr.avg.PL.up[n,i] <- mean(avg.go[which(des$interaction == group)])
+    
+  }
+}
+
+
+#################################################
+# make plots
+
+# treatment upregulated
+
+tr.up <- Heatmap(go.expr.avg.treatment.up, cluster_columns = F, cluster_rows = F, col = cols, row_names_side = 'left', column_names_side = 'top', row_names_gp = gpar(fontsize = 10), heatmap_legend_param = list(title = 'average expression'), name = 'tr.up')
+
+cols <- colorRamp2(breaks = c(min(go.expr.avg.treatment.up), median(as.matrix(go.expr.avg.treatment.up)), max(go.expr.avg.treatment.up)), colors = c('grey', 'mistyrose','firebrick3'))
+
+#png(file = 'plots/heatmap_GO_expression_treatment_up.png', res = 300, width = 10, height = 8, units = 'in')
+
+draw(tr.up, padding = unit(c(10,50,2,2), "mm"))
+decorate_heatmap_body("tr.up", {
+  grid.lines(0, c(0,1), gp = gpar(lty = 1, lwd = 1))
+  grid.lines(1/6, c(0,1), gp = gpar(lty = 1, lwd = 1))
+  grid.lines(2/6, c(0,1), gp = gpar(lty = 1, lwd = 1))
+  grid.lines(3/6, c(0,1), gp = gpar(lty = 1, lwd = 1))
+  grid.lines(4/6, c(0,1), gp = gpar(lty = 1, lwd = 1))
+  grid.lines(5/6, c(0,1), gp = gpar(lty = 1, lwd = 1))
+  grid.lines(1, c(0,1), gp = gpar(lty = 1, lwd = 1))
+})
+
+#dev.off()
+
+# MC up
+
+rownames(go.expr.avg.MC.up) <- select(GO.db, keys=go.results.sig$MC.up, columns="TERM",keytype="GOID")[,2]
+colnames(go.expr.avg.MC.up) <- c("MC control", "MC treatment", "FT control", "FT treatment", "FH control",  "FH treatment", "CV control", "CV treatment", "PL control", "PL treatment", "RD control", "RD treatment")
+
+cols <- colorRamp2(breaks = c(min(go.expr.avg.MC.up), median(as.matrix(go.expr.avg.MC.up)), max(go.expr.avg.MC.up)), colors = c('grey', 'mistyrose','firebrick3'))
+ 
+mc.up <- Heatmap(go.expr.avg.MC.up, cluster_columns = F, cluster_rows = F, col = cols, row_names_side = 'left', column_names_side = 'top', row_names_gp = gpar(fontsize = 10), heatmap_legend_param = list(title = 'average expression'), name = 'mc.up')
+
+#png(file = 'plots/GO_expression_plots/heatmaps/heatmap_GO_expression_MC_up.png', res = 300, width = 11, height = 15, units = 'in')
+
+draw(mc.up, padding = unit(c(10,100,2,2), "mm"))
+decorate_heatmap_body("mc.up", {
+   grid.lines(0, c(0,1), gp = gpar(lty = 1, lwd = 1))
+   grid.lines(1/6, c(0,1), gp = gpar(lty = 1, lwd = 1))
+   grid.lines(2/6, c(0,1), gp = gpar(lty = 1, lwd = 1))
+   grid.lines(3/6, c(0,1), gp = gpar(lty = 1, lwd = 1))
+   grid.lines(4/6, c(0,1), gp = gpar(lty = 1, lwd = 1))
+   grid.lines(5/6, c(0,1), gp = gpar(lty = 1, lwd = 1))
+   grid.lines(1, c(0,1), gp = gpar(lty = 1, lwd = 1))
+ })
+
+#dev.off()
+
+
+# MC down
+
+rownames(go.expr.avg.MC.down) <- select(GO.db, keys=go.results.sig$MC.down, columns="TERM",keytype="GOID")[,2]
+colnames(go.expr.avg.MC.down) <- c("MC control", "MC treatment", "FT control", "FT treatment", "FH control",  "FH treatment", "CV control", "CV treatment", "PL control", "PL treatment", "RD control", "RD treatment")
+
+cols <- colorRamp2(breaks = c(min(go.expr.avg.MC.down), median(as.matrix(go.expr.avg.MC.down)), max(go.expr.avg.MC.down)), colors = c('grey', 'mistyrose','firebrick3'))
+ 
+mc.down <- Heatmap(go.expr.avg.MC.down, cluster_columns = F, cluster_rows = F, col = cols, row_names_side = 'left', column_names_side = 'top', row_names_gp = gpar(fontsize = 10), heatmap_legend_param = list(title = 'average expression'), name = 'mc.down')
+ 
+#png(file = 'plots/heatmaps/heatmap_GO_expression_MC_down.png', res = 300, width = 11, height = 15, units = 'in')
+ 
+draw(mc.down, padding = unit(c(10,100,2,2), "mm"))
+decorate_heatmap_body("mc.down", {
+   grid.lines(0, c(0,1), gp = gpar(lty = 1, lwd = 1))
+   grid.lines(1/6, c(0,1), gp = gpar(lty = 1, lwd = 1))
+   grid.lines(2/6, c(0,1), gp = gpar(lty = 1, lwd = 1))
+   grid.lines(3/6, c(0,1), gp = gpar(lty = 1, lwd = 1))
+   grid.lines(4/6, c(0,1), gp = gpar(lty = 1, lwd = 1))
+   grid.lines(5/6, c(0,1), gp = gpar(lty = 1, lwd = 1))
+   grid.lines(1, c(0,1), gp = gpar(lty = 1, lwd = 1))
+ })
+
+#dev.off()
+
+# MC both (upregulated and downregulated)
+go.expr.avg.MC.both <- rbind(go.expr.avg.MC.up, go.expr.avg.MC.down)
+
+cols <- colorRamp2(breaks = c(min(go.expr.avg.MC.both), median(as.matrix(go.expr.avg.MC.both)), max(go.expr.avg.MC.both)), colors = c('grey', 'mistyrose','firebrick3'))
+
+mc.both <- Heatmap(go.expr.avg.MC.both, cluster_columns = F, cluster_rows = F, col = cols, row_names_side = 'left', column_names_side = 'top', row_names_gp = gpar(fontsize = 10), heatmap_legend_param = list(title = 'average expression'), name = 'mc.both')
+
+#png(file = 'plots/heatmap_GO_expression_MC_down_and_up.png', res = 300, width = 11, height = 15, units = 'in')
+
+draw(mc.both, padding = unit(c(10,100,2,2), "mm"))
+decorate_heatmap_body("mc.both", {
+  grid.lines(0, c(0,1), gp = gpar(lty = 1, lwd = 1))
+  grid.lines(1/6, c(0,1), gp = gpar(lty = 1, lwd = 1))
+  grid.lines(2/6, c(0,1), gp = gpar(lty = 1, lwd = 1))
+  grid.lines(3/6, c(0,1), gp = gpar(lty = 1, lwd = 1))
+  grid.lines(4/6, c(0,1), gp = gpar(lty = 1, lwd = 1))
+  grid.lines(5/6, c(0,1), gp = gpar(lty = 1, lwd = 1))
+  grid.lines(1, c(0,1), gp = gpar(lty = 1, lwd = 1))
+})
+
+#dev.off()
+
+# PL up
+
+rnames <- select(GO.db, keys=go.results.sig$PL.up, columns="TERM",keytype="GOID")[,2]
+# edit old GO terms to what they were replaced by
+rnames[go.results.sig$PL.up=='GO:0030529'] <- 'ribonucleoprotein complex'
+rnames[go.results.sig$PL.up=='GO:0071843'] <- 'cellular component biogenesis'
+
+rownames(go.expr.avg.PL.up) <- rnames
+colnames(go.expr.avg.PL.up) <- c("MC control", "MC treatment", "FT control", "FT treatment", "FH control",  "FH treatment", "CV control", "CV treatment", "PL control", "PL treatment", "RD control", "RD treatment")
+
+cols <- colorRamp2(breaks = c(min(go.expr.avg.PL.up), median(as.matrix(go.expr.avg.PL.up)), max(go.expr.avg.PL.up)), colors = c('grey', 'mistyrose','firebrick3'))
+
+pl.up <- Heatmap(go.expr.avg.PL.up, cluster_columns = F, cluster_rows = F, col = cols, row_names_side = 'left', column_names_side = 'top', row_names_gp = gpar(fontsize = 10), heatmap_legend_param = list(title = 'average expression'), name = 'pl.up')
+
+#png(file = 'plots/heatmap_GO_expression_PL_up.png', res = 300, width = 11, height = 6, units = 'in')
+
+draw(pl.up, padding = unit(c(10,50,2,2), "mm"))
+decorate_heatmap_body("pl.up", {
+  grid.lines(0, c(0,1), gp = gpar(lty = 1, lwd = 1))
+  grid.lines(1/6, c(0,1), gp = gpar(lty = 1, lwd = 1))
+  grid.lines(2/6, c(0,1), gp = gpar(lty = 1, lwd = 1))
+  grid.lines(3/6, c(0,1), gp = gpar(lty = 1, lwd = 1))
+  grid.lines(4/6, c(0,1), gp = gpar(lty = 1, lwd = 1))
+  grid.lines(5/6, c(0,1), gp = gpar(lty = 1, lwd = 1))
+  grid.lines(1, c(0,1), gp = gpar(lty = 1, lwd = 1))
+})
+
+#dev.off()
+
+# RD
+
+rnames <- select(GO.db, keys=go.results.sig$RD.up, columns="TERM",keytype="GOID")[,2]
+# edit old GO terms to what they were replaced by
+rnames[go.results.sig$RD.up=='GO:0030529'] <- 'ribonucleoprotein complex'
+rnames[go.results.sig$RD.up=='GO:0071843'] <- 'cellular component biogenesis'
+
+rownames(go.expr.avg.RD.up) <- rnames
+colnames(go.expr.avg.RD.up) <- c("MC control", "MC treatment", "FT control", "FT treatment", "FH control",  "FH treatment", "CV control", "CV treatment", "PL control", "PL treatment", "RD control", "RD treatment")
+
+cols <- colorRamp2(breaks = c(min(go.expr.avg.RD.up), median(as.matrix(go.expr.avg.RD.up)), max(go.expr.avg.RD.up)), colors = c('grey', 'mistyrose','firebrick3'))
+
+rd.up <- Heatmap(go.expr.avg.RD.up, cluster_columns = F, cluster_rows = F, col = cols, row_names_side = 'left', column_names_side = 'top', row_names_gp = gpar(fontsize = 10), heatmap_legend_param = list(title = 'average expression'), name = 'rd.up')
+
+#png(file = 'plots/heatmap_GO_expression_RD_up.png', res = 300, width = 11, height = 6, units = 'in')
+
+draw(rd.up, padding = unit(c(10,30,2,2), "mm"))
+decorate_heatmap_body("rd.up", {
+  grid.lines(0, c(0,1), gp = gpar(lty = 1, lwd = 1))
+  grid.lines(1/6, c(0,1), gp = gpar(lty = 1, lwd = 1))
+  grid.lines(2/6, c(0,1), gp = gpar(lty = 1, lwd = 1))
+  grid.lines(3/6, c(0,1), gp = gpar(lty = 1, lwd = 1))
+  grid.lines(4/6, c(0,1), gp = gpar(lty = 1, lwd = 1))
+  grid.lines(5/6, c(0,1), gp = gpar(lty = 1, lwd = 1))
+  grid.lines(1, c(0,1), gp = gpar(lty = 1, lwd = 1))
+})
+
+#dev.off()
+
+```
+
+

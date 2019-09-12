@@ -1,0 +1,509 @@
+---
+title: "Analysis of seedling trait data"
+author: "Alayna Mead"
+date: "9/5/2019"
+output: html_document
+---
+
+```{r setup}
+
+library(ggplot2)
+library(cowplot)
+
+# load cleaned data
+load('data/phys_data_cleaned_dataframe.Rdata')
+dat <- phys
+rm(phys)
+
+```
+
+
+```{r lm_population_by_treatment}
+
+# test the effects of population and treatment on each variable
+colnames(dat)
+vars <- c(5:11, 14,21,24,27,30,33,36,40) # get vars we want to test
+colnames(dat)[vars]
+
+lm.results <- list()
+
+for(n in 1:length(vars)){
+  lm.results[[n]] <- anova(lm(dat[,vars[n]] ~ dat$Site*dat$Treatment))
+}
+
+names(lm.results) <- colnames(dat)[vars]
+
+lm.results
+
+# make dataframe for results to make a table
+
+lm.df <- as.data.frame(matrix(nrow = length(vars), ncol = 15))
+rownames(lm.df) <- colnames(dat)[vars]
+colnames(lm.df) <- c('site_df_n', 'site_df_d', 'site_F', 'site_p', 'site_p.adj', 'treatment_df_n', 'treatment_df_d', 'treatment_F', 'treatment_p', 'treatment_p.adj', 'SxT_df_n', 'SxT_df_d', 'SxT_F', 'SxT_p', 'SxT_p.adj')
+
+for(n in 1:length(vars)){
+  
+  # degrees of freedom
+  lm.df[n, c(1,6,11)] <- lm.results[[n]]$Df[1:3]
+  lm.df[n, c(2,7,12)] <- lm.results[[n]]$Df[4]
+  # F value
+  lm.df[n, c(3,8,13)] <- lm.results[[n]]$`F value`[1:3]
+  # pvalue
+  lm.df[n, c(4,9,14)] <- lm.results[[n]]$`Pr(>F)`[1:3]
+  
+}
+
+lm.df[,c(5,10,15)] <- p.adjust(unlist(lm.df[,c(4,9,14)]), method = 'BH')
+
+lm.df[,c(5,10,15)] <- format(unlist(lm.df[,c(5,10,15)]), digits = 3)
+
+write.table(lm.df, file = 'output/trait_data_anova_results_table.csv', row.names = T, col.names = T, sep = ',', quote = F)
+
+```
+
+
+
+```{r TLP_diff}
+
+# look at difference in TLP among treatments and populations
+
+cols <- c("#ffe55c", "#ff8b4e", "#e14d66", "#9c2e7f", "#5f0092", "#000262")
+
+# get average TLP for each population/treatment, at time point 1 and 2
+tlp_diff_1 <- vector()
+tlp_diff_2 <- vector()
+
+for(n in 1:length(levels(dat$Site))){
+  
+  site <- levels(dat$Site)[n]
+  tlp_c_1 <- mean(na.omit(dat$TLP_avg[dat$Site == site & dat$Treatment == 'control1']))
+  tlp_d_1 <- mean(na.omit(dat$TLP_avg[dat$Site == site & dat$Treatment == 'drought1']))
+  tlp_diff_1[n] <- c(tlp_c_1 - tlp_d_1)
+  
+  site <- levels(dat$Site)[n]
+  tlp_c_2 <- mean(na.omit(dat$TLP_avg[dat$Site == site & dat$Treatment == 'control2']))
+  tlp_d_2 <- mean(na.omit(dat$TLP_avg[dat$Site == site & dat$Treatment == 'drought2']))
+  tlp_diff_2[n] <- c(tlp_c_2 - tlp_d_2)
+  
+}
+
+names(tlp_diff_1) <- levels(dat$Site)
+names(tlp_diff_2) <- levels(dat$Site)
+
+tlp_diff_1
+tlp_diff_2
+
+par(mfrow = c(1,2), las = 2)
+barplot(tlp_diff_1, col = cols, ylab = 'Control TLP - Treatment TLP', ylim = c(-.1, .7), main = '10 days')
+barplot(tlp_diff_2, col = cols, ylim = c(-.1, .7), main = '20 days')
+
+
+# average difference in TLP across all individuals
+mean(na.omit(dat$TLP_avg[dat$Treatment == 'control1'])) # -2.251017
+mean(na.omit(dat$TLP_avg[dat$Treatment == 'drought1'])) # -2.433312
+# difference between control and treatment day 10: 0.182295
+mean(na.omit(dat$TLP_avg[dat$Treatment == 'control2'])) # -2.483742
+mean(na.omit(dat$TLP_avg[dat$Treatment == 'drought2'])) # -2.918158
+# difference between control and treatment day 20: 0.434416
+
+```
+
+
+```{r LWP_diff}
+
+# look at difference in LWP among treatments and populations
+
+lwp_diff_1 <- vector()
+lwp_diff_2 <- vector()
+
+# get average LWP for each population/treatment, at time point 1 and 2
+for(n in 1:length(levels(dat$Site))){
+  
+  site <- levels(dat$Site)[n]
+  lwp_c_1 <- mean(na.omit(dat$leaf_WP_avg[dat$Site == site & dat$Treatment == 'control1']))
+  lwp_d_1 <- mean(na.omit(dat$leaf_WP_avg[dat$Site == site & dat$Treatment == 'drought1']))
+  lwp_diff_1[n] <- c(lwp_c_1 - lwp_d_1)
+  
+  site <- levels(dat$Site)[n]
+  lwp_c_2 <- mean(na.omit(dat$leaf_WP_avg[dat$Site == site & dat$Treatment == 'control2']))
+  lwp_d_2 <- mean(na.omit(dat$leaf_WP_avg[dat$Site == site & dat$Treatment == 'drought2']))
+  lwp_diff_2[n] <- c(lwp_c_2 - lwp_d_2)
+  
+}
+
+names(lwp_diff_1) <- levels(dat$Site)
+names(lwp_diff_2) <- levels(dat$Site)
+
+lwp_diff_1
+lwp_diff_2
+
+par(mfrow = c(1,2), las = 2)
+barplot(lwp_diff_1, col = cols, ylab = 'Control LWP - Treatment LWP', ylim = c(-.2, 2), main = '10 days')
+barplot(lwp_diff_2, col = cols, ylim = c(-.2,2), main = '20 days')
+
+# average across all individuals
+mean(na.omit(dat$leaf_WP_avg[dat$Treatment == 'control1'])) # -1.229087
+mean(na.omit(dat$leaf_WP_avg[dat$Treatment == 'drought1'])) # -1.486458
+# difference between control and treatment day 10: 0.257371
+mean(na.omit(dat$leaf_WP_avg[dat$Treatment == 'control2'])) # -1.394783
+mean(na.omit(dat$leaf_WP_avg[dat$Treatment == 'drought2'])) # -3.02119
+# difference between control and treatment day 20: 1.626407
+
+```
+
+
+```{r summarize_treatment_differences}
+
+aggregate(leaf_WP_avg~Treatment, dat, mean)
+
+treatment_avg <- aggregate(.~Treatment, dat, mean)
+
+treatment_avg
+
+# diff in TLP between 10 day control and 20 day treatment
+-2.918158--2.251017 #-0.667141
+
+# diff in LWP between 10 day control and 20 day treatment
+-3.021190--1.229087 #-1.792103
+
+# LWP, 10 day control and treatment
+-1.486458--1.229087 #-0.257371
+# LWP, 20 day
+-3.021190--1.394783 #-1.626407
+
+# TLP, 10 day
+-2.433312--2.251017 #-0.182295
+# TLP, 20 day
+-2.918158- -2.483742 #-0.434416
+
+```
+
+```{r posthoc}
+
+# run t-tests for each pair of populations or treatments for variables which were significant in the anova
+
+# population
+site.t.results <- list()
+traits <- c(5,8,9,11,14)
+for(n in 1:length(traits)){
+  site.t.results[[n]] <- pairwise.t.test(dat[,traits[n]], dat$Site, p.adjust.method = 'BH')
+}
+names(site.t.results) <- colnames(dat)[traits]
+site.t.results
+
+# treatment
+treatment.t.results <- list()
+traits <- c(11,14,21,30,33,36,40)
+for(n in 1:length(traits)){
+  treatment.t.results[[n]] <- pairwise.t.test(dat[,traits[n]], dat$Treatment, p.adjust.method = 'BH')
+}
+names(treatment.t.results) <- colnames(dat)[traits]
+treatment.t.results
+
+```
+
+
+
+```{r scatterplots}
+
+# plot scatterplots of all variables by treatment and population
+
+# change treatment labels
+dat$Treatment <- factor(dat$Treatment, levels = c("control1", "drought1", "control2", "drought2"), labels = c("Control 1", "Treatment 1", "Control 2", "Treatment 2"), ordered = T)
+
+# get variables we care about
+vars <- c(5:11,14,21,24,27,30,33,36,40)
+names <- colnames(dat)[vars]
+names_long <- c('Family Weight', 'Days to Germination', "Diameter", "Height", 'Largest Leaf Length', 'Largest Leaf Width', "Largest Leaf Thickness", 'Average Leaf Thickness', 'Turgor Loss Point (MPa)', 'Average Leaf Area', 'Average Leaf Dry Mass', 'Soil Mass', 'Soil Water Potential (MPa)', 'Leaf Water Potential (MPa)', 'Leaf Water Potential - Soil Water Potential (MPa)')
+
+for(n in 1:length(vars)){
+  
+  # make new dataframe with NAs for this variable removed
+  dat.noNA <- dat[!is.na(dat[,vars[n]]),]
+  # new time 1
+  dat_t1.noNA <- rbind(dat.noNA[dat.noNA$Treatment == "Control 1",],dat.noNA[dat.noNA$Treatment == "Treatment 1",]) 
+  # new time 2
+  dat_t2.noNA <- rbind(dat.noNA[dat.noNA$Treatment == "Control 2",],dat.noNA[dat.noNA$Treatment == "Treatment 2",])
+  
+  t1 <- ggplot(data = dat_t1.noNA, aes(y = dat_t1.noNA[,vars[n]], x = dat_t1.noNA$Site)) + geom_point(aes(color = dat_t1.noNA$Treatment), shape = 1, size = 3, stroke = 1.2, position=position_jitter(width=.2, height=0)) + scale_color_manual(values = c("lightblue2", "coral1"), name = 'Treatment', labels = c('10-day control', '10-day treatment')) + ylab(names_long[n]) + xlab("Site") + theme_bw() + theme(legend.position = 'top')
+  
+  plot(t1)
+  ggsave(filename = paste("plots/scatterplot_", names[n], "_time1.png", sep = ""), width = 6, height = 4, units = "in", dpi  = 300)
+  
+  t2 <- ggplot(data = dat_t2.noNA, aes(y = dat_t2.noNA[,vars[n]], x = dat_t2.noNA$Site)) + geom_point(aes(color = dat_t2.noNA$Treatment), shape = 1, size = 3, stroke = 1.2, position=position_jitter(width=.2, height=0)) + scale_color_manual(values = c("dodgerblue", "firebrick3"), name = 'Treatment', labels = c('20-day control', '20-day treatment')) + ylab('') + xlab("Site") + theme_bw()+ theme(legend.position = 'top')
+  
+  plot(t2)
+  ggsave(filename = paste('plots/', names[n], "_time2.png", sep = ""), width = 6, height = 4, units = "in", dpi  = 300)
+  
+  # set ranges for side by side plots
+  miny <- min(dat.noNA[,vars[n]]) - abs((range(dat.noNA[,vars[n]])[2]- (range(dat.noNA[,vars[n]])[1])))*0.05
+  maxy <- max(dat.noNA[,vars[n]]) + abs((range(dat.noNA[,vars[n]])[2]-(range(dat.noNA[,vars[n]])[1])))*0.05
+  
+  t1_2 <- t1 + ylim(miny,maxy)
+  t2_2 <- t2 + ylim(miny,maxy)
+  
+  plot_grid(t1_2,t2_2)
+  ggsave(filename = paste('plots/', names[n], "_2plots.png", sep=""), width = 10, height = 4, units = "in", dpi  = 300)
+  
+}
+
+
+```
+
+
+
+```{r boxplots_population}
+
+# plot boxplots by population for variables with significant population effect
+
+cols <- c("#ffe55c", "#ff8b4e", "#e14d66", "#9c2e7f", "#5f0092", "#000262")
+
+# by population - family weight, height, largest leaf thickness, avg leaf thickness
+
+png(file = 'plots/boxplot_site_family_weight.png', width = 6, height = 5, res = 300, units = 'in')
+boxplot(dat$Family_Wt ~ dat$Site, col = cols, names = c('MC', 'FT', 'FH', 'CV', 'PL', 'RD'), main = 'Family Weight', ylim = c(75, 230), xlab = '')
+text(1, 225, 'a', cex = 2)
+text(2, 225, 'b', cex = 2)
+text(3, 225, 'b', cex = 2)
+text(4, 225, 'ab', cex = 2)
+text(5, 225, 'ab', cex = 2)
+text(6, 225, 'ab', cex = 2)
+dev.off()
+
+png(file = 'plots/boxplot_site_height.png', width = 6, height = 5, res = 300, units = 'in')
+boxplot(dat$Height ~ dat$Site, col = cols, names = c('MC', 'FT', 'FH', 'CV', 'PL', 'RD'), main = 'Height', ylab = 'cm', ylim = c(35, 310), xlab = '')
+text(1, 300, 'a', cex = 2)
+text(2, 300, 'a', cex = 2)
+text(3, 300, 'a', cex = 2)
+text(4, 300, 'b', cex = 2)
+text(5, 300, 'a', cex = 2)
+text(6, 300, 'a', cex = 2)
+dev.off()
+
+png(file = 'plots/boxplot_site_largest_leaf_length.png', width = 6, height = 5, res = 300, units = 'in')
+boxplot(dat$larg_leaf_length ~ dat$Site, col = cols, names = c('MC', 'FT', 'FH', 'CV', 'PL', 'RD'), main = 'Largest Leaf Length', ylim = c(20, 115), ylab = 'mm', xlab = '')
+text(1, 110, 'ab', cex = 2)
+text(2, 110, 'ab', cex = 2)
+text(3, 110, 'a', cex = 2)
+text(4, 110, 'ab', cex = 2)
+text(5, 110, 'ab', cex = 2)
+text(6, 110, 'b', cex = 2)
+dev.off()
+
+png(file = 'plots/boxplot_site_largest_leaf_thickness.png', width = 6, height = 5, res = 300, units = 'in')
+boxplot(dat$larg_leaf_thick ~ dat$Site, col = cols, names = c('MC', 'FT', 'FH', 'CV', 'PL', 'RD'), main = 'Largest Leaf Thickness', ylim = c(.1, .21), ylab = 'mm', xlab = '')
+text(1, .205, 'ab', cex = 2)
+text(2, .205, 'b', cex = 2)
+text(3, .205, 'b', cex = 2)
+text(4, .205, 'a', cex = 2)
+text(5, .205, 'a', cex = 2)
+text(6, .205, 'a', cex = 2)
+dev.off()
+
+png(file = 'plots/boxplot_site_avg_leaf_thickness.png', width = 6, height = 5, res = 300, units = 'in')
+boxplot(dat$avg_ave_thick ~ dat$Site, col = cols, names = c('MC', 'FT', 'FH', 'CV', 'PL', 'RD'), main = 'Average Leaf Thickness', ylim = c(0.05, 0.18), ylab = 'mm', xlab = '')
+text(1, .175, 'a', cex = 2)
+text(2, .175, 'ab', cex = 2)
+text(3, .175, 'a', cex = 2)
+text(4, .175, 'b', cex = 2)
+text(5, .175, 'ab', cex = 2)
+text(6, .175, 'ab', cex = 2)
+dev.off()
+
+# Plot traits with significant population effect together (significant after multiple testing correction, don't plot family weight since it's from common garden data and not as relevant)
+
+# horizontal
+png(file =  'plots/boxplot_all_site_horizontal.png', width = 9, height = 3.5, res = 300, units = 'in')
+par(mfrow = c(1,3), las = 1)
+boxplot(dat$Height ~ dat$Site, col = cols, names = c('MC', 'FT', 'FH', 'CV', 'PL', 'RD'), main = 'Height', ylab = 'cm', ylim = c(35, 310), xlab = '')
+text(1, 300, 'a', cex = 2)
+text(2, 300, 'a', cex = 2)
+text(3, 300, 'a', cex = 2)
+text(4, 300, 'b', cex = 2)
+text(5, 300, 'a', cex = 2)
+text(6, 300, 'a', cex = 2)
+
+boxplot(dat$larg_leaf_thick ~ dat$Site, col = cols, names = c('MC', 'FT', 'FH', 'CV', 'PL', 'RD'), main = 'Largest Leaf Thickness', ylim = c(.1, .21), ylab = 'mm', xlab = '')
+text(1, .205, 'ab', cex = 2)
+text(2, .205, 'b', cex = 2)
+text(3, .205, 'b', cex = 2)
+text(4, .205, 'a', cex = 2)
+text(5, .205, 'a', cex = 2)
+text(6, .205, 'a', cex = 2)
+
+boxplot(dat$avg_ave_thick ~ dat$Site, col = cols, names = c('MC', 'FT', 'FH', 'CV', 'PL', 'RD'), main = 'Average Leaf Thickness', ylim = c(0.05, 0.18), ylab = 'mm', xlab = '')
+text(1, .175, 'a', cex = 2)
+text(2, .175, 'ab', cex = 2)
+text(3, .175, 'a', cex = 2)
+text(4, .175, 'b', cex = 2)
+text(5, .175, 'ab', cex = 2)
+text(6, .175, 'ab', cex = 2)
+
+dev.off()
+
+```
+
+
+```{r boxplot_treatment}
+
+# plot boxplots by treatment for variables with significant treatment effect
+
+cols <- c("lightblue2", "coral1", "dodgerblue", "firebrick3")
+
+png(file = 'plots/boxplot_treatment_largest_leaf_thickness.png', width = 6, height = 5, res = 300, units = 'in')
+boxplot(dat$larg_leaf_thick ~ dat$Treatment, main = 'Largest Leaf Thickness', col = c("lightblue2", "coral1", "dodgerblue", "firebrick3"), ylim = c(.1, .21), ylab = 'mm', xlab = '')
+text(1, .2, 'a', cex = 2)
+text(2, .2, 'ab', cex = 2)
+text(3, .2, 'ab', cex = 2)
+text(4, .2, 'b', cex = 2)
+dev.off()
+
+png(file = 'plots/boxplot_treatment_average_leaf_thickness.png', width = 6, height = 5, res = 300, units = 'in')
+boxplot(dat$avg_ave_thick ~ dat$Treatment, col = c("lightblue2", "coral1", "dodgerblue", "firebrick3"), main = 'Average Leaf Thickness', ylim = c(0.05, 0.18), ylab = 'mm', xlab = '')
+text(1, .17, 'a', cex = 2)
+text(2, .17, 'a', cex = 2)
+text(3, .17, 'a', cex = 2)
+text(4, .17, 'a', cex = 2)
+dev.off()
+
+png(file = 'plots/boxplot_treatment_turgor_loss_point.png', width = 6, height = 5, res = 300, units = 'in')
+boxplot(dat$TLP_avg ~ dat$Treatment, col = c("lightblue2", "coral1", "dodgerblue", "firebrick3"), main = 'Turgor Loss Point', ylim = c(-3.3, -1.2), ylab = 'MPa', xlab = '')
+text(1, -1.3, 'a', cex = 2)
+text(2, -1.3, 'b', cex = 2)
+text(3, -1.3, 'b', cex = 2)
+text(4, -1.3, 'c', cex = 2)
+dev.off()
+
+png(file = 'plots/boxplot_treatment_soil_mass.png', width = 6, height = 5, res = 300, units = 'in')
+boxplot(dat$soil_mass_avg ~ dat$Treatment, col = c("lightblue2", "coral1", "dodgerblue", "firebrick3"), main = 'Soil Mass', ylim = c(140, 430), xlab = '')
+text(1, 420, 'a', cex = 2)
+text(2, 420, 'b', cex = 2)
+text(3, 420, 'c', cex = 2)
+text(4, 420, 'd', cex = 2)
+dev.off()
+
+png(file = 'plots/boxplot_treatment_soil_water_potential.png', width = 6, height = 5, res = 300, units = 'in')
+boxplot(dat$soil_WP_avg ~ dat$Treatment, col = c("lightblue2", "coral1", "dodgerblue", "firebrick3"), main = 'Soil Water Potential', ylim = c(-3.4, 1.1), ylab = 'MPa', xlab = '')
+text(1, .8, 'a', cex = 2)
+text(2, .8, 'b', cex = 2)
+text(3, .8, 'c', cex = 2)
+text(4, .8, 'd', cex = 2)
+dev.off()
+
+png(file = 'plots/boxplot_treatment_leaf_water_potential.png', width = 6, height = 5, res = 300, units = 'in')
+boxplot(dat$leaf_WP_avg ~ dat$Treatment, col = c("lightblue2", "coral1", "dodgerblue", "firebrick3"), main = 'Leaf Water Potential', ylim = c(-4, -.1), ylab = 'MPa', xlab = '')
+text(1, -.2, 'a', cex = 2)
+text(2, -.2, 'a', cex = 2)
+text(3, -.2, 'a', cex = 2)
+text(4, -.2, 'b', cex = 2)
+dev.off()
+
+png(file = 'plots/boxplot_treatment_water_potential_leaf_soil_diff.png', width = 6, height = 5, res = 300, units = 'in')
+boxplot(dat$WP_avg_leaf_soil_diff ~ dat$Treatment, col = c("lightblue2", "coral1", "dodgerblue", "firebrick3"), main = 'Leaf Water Potential - Soil Water Potential', ylim = c(-2.1, 1.5), ylab = 'MPa', xlab = '')
+text(1, 1.3, 'a', cex = 2)
+text(2, 1.3, 'a', cex = 2)
+text(3, 1.3, 'b', cex = 2)
+text(4, 1.3, 'b', cex = 2)
+dev.off()
+
+################################################################
+# plot together - significant treatment effect after multiple testing correction
+
+png(file =  'plots/boxplot_all_treatment.png', width = 9, height = 6, res = 300, units = 'in')
+par(mfrow = c(2,3), las = 2, mar = c(5.5,4,4,1))
+
+boxplot(dat$TLP_avg ~ dat$Treatment, col = c("lightblue2", "coral1", "dodgerblue", "firebrick3"), main = 'Turgor Loss Point', ylim = c(-3.3, -1.2), ylab = 'MPa', xlab = '')
+text(1, -1.3, 'a', cex = 2)
+text(2, -1.3, 'b', cex = 2)
+text(3, -1.3, 'b', cex = 2)
+text(4, -1.3, 'c', cex = 2)
+
+boxplot(dat$soil_mass_avg ~ dat$Treatment, col = c("lightblue2", "coral1", "dodgerblue", "firebrick3"), main = 'Soil Mass', ylim = c(140, 430), xlab = '')
+text(1, 420, 'a', cex = 2)
+text(2, 420, 'b', cex = 2)
+text(3, 420, 'c', cex = 2)
+text(4, 420, 'd', cex = 2)
+
+boxplot(dat$soil_WP_avg ~ dat$Treatment, col = c("lightblue2", "coral1", "dodgerblue", "firebrick3"), main = 'Soil Water Potential', ylim = c(-3.4, 1.1), ylab = 'MPa', xlab = '')
+text(1, .8, 'a', cex = 2)
+text(2, .8, 'b', cex = 2)
+text(3, .8, 'c', cex = 2)
+text(4, .8, 'd', cex = 2)
+
+boxplot(dat$leaf_WP_avg ~ dat$Treatment, col = c("lightblue2", "coral1", "dodgerblue", "firebrick3"), main = 'Leaf Water Potential', ylim = c(-4, -.1), ylab = 'MPa', xlab = '')
+text(1, -.2, 'a', cex = 2)
+text(2, -.2, 'a', cex = 2)
+text(3, -.2, 'a', cex = 2)
+text(4, -.2, 'b', cex = 2)
+
+boxplot(dat$WP_avg_leaf_soil_diff ~ dat$Treatment, col = c("lightblue2", "coral1", "dodgerblue", "firebrick3"), main = 'Leaf Water Potential - Soil Water Potential', ylim = c(-2.1, 1.5), ylab = 'MPa', xlab = '')
+text(1, 1.3, 'a', cex = 2)
+text(2, 1.3, 'a', cex = 2)
+text(3, 1.3, 'b', cex = 2)
+text(4, 1.3, 'b', cex = 2)
+
+dev.off()
+
+
+
+```
+
+
+```{r boxplot_all_significant}
+
+# plot all traits with significant treatment / population effects together
+
+cols <- c("#ffe55c", "#ff8b4e", "#e14d66", "#9c2e7f", "#5f0092", "#000262")
+
+dat$Treatment <- factor(dat$Treatment, levels = c('Control 1', 'Treatment 1', 'Control 2', 'Treatment 2'), labels = c('C Day 10', 'T Day 10', 'C Day 20', 'D Day 20'))
+
+png(file =  'plots/boxplot_all.png', width = 10, height = 6, res = 300, units = 'in')
+
+par(mfrow = c(2,3), mar = c(5,4,2,1), las = 2, cex.main = 1.4, cex.lab = 1.2, cex.axis = 1.1)
+
+boxplot(dat$Height ~ dat$Site, col = cols, main = 'Height', ylab = 'cm', ylim = c(35, 310), xlab = '')
+text(1, 290, 'a', cex = 2, adj = c(NA, 0))
+text(2, 290, 'a', cex = 2, adj = c(NA, 0))
+text(3, 290, 'a', cex = 2, adj = c(NA, 0))
+text(4, 290, 'b', cex = 2, adj = c(NA, 0))
+text(5, 290, 'a', cex = 2, adj = c(NA, 0))
+text(6, 290, 'a', cex = 2, adj = c(NA, 0))
+
+boxplot(dat$larg_leaf_thick ~ dat$Site, col = cols, main = 'Largest Leaf Thickness', ylim = c(.1, .21), ylab = 'mm', xlab = '')
+text(1, .203, 'ab', cex = 2, adj = c(NA, 0))
+text(2, .203, 'b', cex = 2, adj = c(NA, 0))
+text(3, .203, 'b', cex = 2, adj = c(NA, 0))
+text(4, .203, 'a', cex = 2, adj = c(NA, 0))
+text(5, .203, 'a', cex = 2, adj = c(NA, 0))
+text(6, .203, 'a', cex = 2, adj = c(NA, 0))
+
+boxplot(dat$avg_ave_thick ~ dat$Site, col = cols, main = 'Average Leaf Thickness', ylim = c(0.05, 0.18), ylab = 'mm', xlab = '')
+text(1, .172, 'a', cex = 2, adj = c(NA, 0))
+text(2, .172, 'ab', cex = 2, adj = c(NA, 0))
+text(3, .172, 'a', cex = 2, adj = c(NA, 0))
+text(4, .172, 'b', cex = 2, adj = c(NA, 0))
+text(5, .172, 'ab', cex = 2, adj = c(NA, 0))
+text(6, .172, 'ab', cex = 2, adj = c(NA, 0))
+
+boxplot(dat$TLP_avg ~ dat$Treatment, col = c("lightblue2", "coral1", "dodgerblue", "firebrick3"), main = 'Turgor Loss Point', ylim = c(-3.3, -1.7), ylab = 'MPa', xlab = '')
+text(1, -1.82, 'a', cex = 2, adj = c(NA, 0))
+text(2, -1.82, 'b', cex = 2, adj = c(NA, 0))
+text(3, -1.82, 'b', cex = 2, adj = c(NA, 0))
+text(4, -1.82, 'c', cex = 2, adj = c(NA, 0))
+
+boxplot(dat$soil_WP_avg ~ dat$Treatment, col = c("lightblue2", "coral1", "dodgerblue", "firebrick3"), main = 'Soil Water Potential', ylim = c(-3.4, 1.1), ylab = 'MPa', xlab = '')
+text(1, .75, 'a', cex = 2, adj = c(NA, 0))
+text(2, .75, 'b', cex = 2, adj = c(NA, 0))
+text(3, .75, 'c', cex = 2, adj = c(NA, 0))
+text(4, .75, 'd', cex = 2, adj = c(NA, 0))
+
+boxplot(dat$leaf_WP_avg ~ dat$Treatment, col = c("lightblue2", "coral1", "dodgerblue", "firebrick3"), main = 'Leaf Water Potential', ylim = c(-4, -.1), ylab = 'MPa', xlab = '')
+text(1, -.35, 'a', cex = 2, adj = c(NA, 0))
+text(2, -.35, 'a', cex = 2, adj = c(NA, 0))
+text(3, -.35, 'a', cex = 2, adj = c(NA, 0))
+text(4, -.35, 'b', cex = 2, adj = c(NA, 0))
+
+dev.off()
+
+
+```

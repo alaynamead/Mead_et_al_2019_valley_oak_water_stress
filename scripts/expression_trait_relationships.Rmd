@@ -1,0 +1,380 @@
+---
+title: "Gene expression and ecophysiology MIC analysis"
+author: "Alayna Mead"
+date: "July 30, 2018"
+output: html_document
+---
+
+```{r setup}
+
+library(minerva)
+library(parallel) # to run on multiple cores
+
+```
+
+```{r data}
+
+# physiology data - named 'phys'
+load('data/phys_data_cleaned_dataframe.Rdata')
+
+# expression data
+expr <- read.csv('data/gene_expression_normalized_voom_batch_effects_removed.csv', row.names = 1, check.names = F)
+
+```
+
+```{r functions}
+
+# function to get confidence interval
+ci.get <- function(distribution, confidence.level = 0.95, ...){
+  ci.range <- c(0, confidence.level)+(1-confidence.level)/2
+  return(quantile(distribution, probs = ci.range, names = F, ...))
+}
+
+# p value calculator
+# Note: have not tested two-sided option extensively, but this function
+# should be fine for doing one-sided test of whether a value (MIC)
+# is greater than expected from a null distribution of MIC.
+# Would need to  change if testing whether a value is smaller than expected.
+pcalc <- function(nullDist, observedStatistic, sided = "two"){
+  switch (sided,two = {
+    # two-sided test: actual value is different than null 
+    # (either bigger or smaller)
+    # calculate for most likely scenario, then multiply by 2
+    # to account for using both tails
+      pValue <- (min(sum(nullDist > observedStatistic), sum(nullDist < observedStatistic))/length(nullDist))*2
+    },
+    one = {
+      # one-sided test: actual is bigger or smaller than null
+      # get null observations that are less than actual
+      # return pvalue for probability that observed is 
+      # greater than null
+      # (would have to change for prob observed is less than null)
+      pValue <- sum(nullDist > observedStatistic)/length(nullDist)
+    },
+    
+    {
+      stop("Unknown sidedness")
+    }
+  )
+  return(pValue)
+}
+
+
+
+# Function for bootstrapping MIC values
+# Resamples variables and calculates MIC to build a null distribution and calculate the likelihood that the true MIC value could have been as high as that observed by chance
+mic.boot <- function(xvar, yvar, nBootstraps = 10000, ci.level = 0.95, alpha.level = 0.05, sided = "one", ncores = 1, ...){
+  
+  # get null distribution of MIC values
+  MIC.null <- vector()
+  for(b in 1:nBootstraps){
+    nsamples <- length(xvar)
+    resampledX <- xvar[sample(1:nsamples, replace = F)]
+    mic <- mine(resampledX, yvar, n.cores = ncores)
+    MIC.null[b] <- mic$MIC
+  }
+  # get actual MIC
+  MIC.actual <- mine(xvar, yvar)$MIC
+  
+  return(
+    list(
+      MIC.actual = MIC.actual,
+      null.confidence.interval = ci.get(MIC.null, ci.level),
+      p.value = pcalc(nullDist = MIC.null, observedStatistic = MIC.actual, sided = sided)
+    )
+  )
+  
+}
+
+```
+
+```{r bootstrap_template}
+
+# Actual bootstrap analysis takes a long time, so this section was run on a server.
+
+# This is a template for scripts that were run on server.
+# Uncomment treatment and column options to change.
+# Ran 4 scripts (for each combination of treatment and measurement options)
+# See "MIC_bootstrap____.R" scripts
+# This took 12-14 hours to run for each combination.
+
+# define what to run
+# treatment
+
+#treatment <- 'control1'
+treatment <- 'drought1'
+
+# physiology measure
+phys_measure <- 'leaf_WP_avg'
+#phys_measure <- 'TLP_avg'
+
+# get subset of expression data
+samples <- phys$Tree[which(phys$Treatment == treatment)]
+expr <- expr[,which(colnames(expr) %in% samples)]
+phys <- phys[which(phys$Tree %in% colnames(expr)),] # use expression samples because not all in treatment were sequenced
+
+# remove 069-15 outlier
+expr <- expr[, which(colnames(expr) != '069-15')]
+phys <- phys[which(phys$Tree != '069-15'),]
+
+# get measurement vector
+column <- which(colnames(phys) == phys_measure)
+measure <- phys[,column]
+
+# run bootstrap for all genes
+# this is calculating pvals for MIC of expression and TLP for control individuals
+# haven't been able to get it to run with multiple cores
+top <- nrow(expr)
+mic.boot.result <- as.data.frame(matrix(nrow = top, ncol = 2))
+colnames(mic.boot.result) <- c('MIC', 'p.value')
+rownames(mic.boot.result) <- rownames(expr)[1:top]
+
+for(n in 1:top){
+  mic <- mic.boot(measure, as.numeric(expr[n,]), nBootstraps = 5000, ncores = 1)
+  mic.boot.result[n,1] <- mic$MIC.actual
+  mic.boot.result[n,2] <- mic$p.value
+  if (n %% 100 == 0){
+    print(c('done with gene', n), quote = F)
+  }
+}
+
+save(mic.boot.result, file = paste('MIC_bootstrap_results', treatment, colnames(phys)[column], '.Rdata', sep = '_'))
+
+```
+
+
+```{r load_results}
+
+# get data
+load('data/MIC_bootstrap_results_drought1_leaf_WP_avg.Rdata')
+mic.d.wp <- mic.boot.result
+
+load('data/MIC_bootstrap_results_drought1_TLP_avg.Rdata')
+mic.d.tlp <- mic.boot.result
+
+load('data/MIC_bootstrap_results_control1_leaf_WP_avg.Rdata')
+mic.c.wp <- mic.boot.result
+
+load('data/MIC_bootstrap_results_control1_TLP_avg.Rdata')
+mic.c.tlp <- mic.boot.result
+rm(mic.boot.result)
+
+expr <- read.csv('data/gene_expression_normalized_voom_batch_effects_removed.csv', row.names = 1, check.names = F)
+
+# physiology data - named 'phys'
+load('data/phys_data_cleaned_dataframe.Rdata')
+
+# load wgcna data - named 'net'
+load('data/wgcna_results_net_unsigned_merge_0.3_min_50.Rdata')
+
+```
+
+
+```{r check_results}
+
+# look at histograms of MIC and p-values
+
+par(mfrow = c(2,2))
+
+hist(mic.c.wp$MIC, breaks = 'fd', main = 'control WP')
+hist(mic.c.tlp$MIC, breaks = 'fd', main = 'control TLP')
+hist(mic.d.wp$MIC, breaks = 'fd', main = 'treatment WP')
+hist(mic.d.tlp$MIC, breaks = 'fd', main = 'treatment TLP')
+
+hist(mic.c.wp$p.value, breaks = 20, main = 'control WP')
+hist(mic.c.tlp$p.value, breaks = 20, main = 'control TLP')
+hist(mic.d.wp$p.value, breaks = 20, main = 'treatment WP')
+hist(mic.d.tlp$p.value, breaks = 20, main = 'treatment TLP')
+
+sum(mic.c.wp$p.value <= 0.001) # 22
+sum(mic.d.wp$p.value <= 0.001) # 142
+sum(mic.c.tlp$p.value <= 0.001) # 72
+sum(mic.d.tlp$p.value <= 0.001) # 24
+
+# expected number of p <= 0.001 by chance
+nrow(mic.d.wp)*0.001 # 19.459
+
+```
+
+
+```{r plots_setup}
+
+# separate gene expression into control and drought
+# only need physiology data of sequenced individuals
+
+phys <- phys[phys$Tree %in% colnames(expr),]
+cbind(as.character(phys$Tree), colnames(expr)) # check that names match
+
+expr.c <- expr[,phys$Treatment == 'control1']
+expr.d <- expr[,phys$Treatment == 'drought1']
+expr.d <- expr.d[,! colnames(expr.d) %in% '069-15'] # remove 069-15 outlier
+
+phys.c <- phys[phys$Tree %in% colnames(expr.c),]
+phys.d <- phys[phys$Tree %in% colnames(expr.d),]
+
+# get physiology measurements for each subset
+wp.d <- phys$leaf_WP_avg[phys$Tree %in% colnames(expr.d)]
+wp.c <- phys$leaf_WP_avg[phys$Tree %in% colnames(expr.c)]
+tlp.d <- phys$TLP_avg[phys$Tree %in% colnames(expr.d)]
+tlp.c <- phys$TLP_avg[phys$Tree %in% colnames(expr.c)]
+
+# sort MIC values by significance
+mic.d.wp <- mic.d.wp[order(mic.d.wp$p.value),]
+mic.c.wp <- mic.c.wp[order(mic.c.wp$p.value),]
+mic.d.tlp <- mic.d.tlp[order(mic.d.tlp$p.value),]
+mic.c.tlp <- mic.c.tlp[order(mic.c.tlp$p.value),]
+
+# get correlations of top genes and physiology so we can sort by positive or negative correlations
+mic.d.wp$cor <- sapply(1:nrow(expr), function(X) cor(unlist(expr.d[rownames(mic.d.wp)[X],]), wp.d))
+mic.c.wp$cor <- sapply(1:nrow(expr), function(X) cor(unlist(expr.c[rownames(mic.c.wp)[X],]), wp.c))
+mic.d.tlp$cor <- sapply(1:nrow(expr), function(X) cor(unlist(expr.d[rownames(mic.d.tlp)[X],]), tlp.d))
+mic.c.tlp$cor <- sapply(1:nrow(expr), function(X) cor(unlist(expr.c[rownames(mic.c.tlp)[X],]), tlp.c))
+
+# add module info for each gene
+mic.d.wp$mod <- net$colors[rownames(mic.d.wp)]
+mic.c.wp$mod <- net$colors[rownames(mic.c.wp)]
+mic.d.tlp$mod <- net$colors[rownames(mic.d.tlp)]
+mic.c.tlp$mod <- net$colors[rownames(mic.c.tlp)]
+
+# save data
+save(mic.d.wp, mic.c.wp, mic.d.tlp, mic.c.tlp, file = 'output/MIC_phys_gene_expression_info.Rdata')
+
+```
+
+```{r plot_functions}
+
+# somewhat ugly function for making plots of gene expression and physiology
+plot_expr_phys <- function(mic.data, phys.data, expr.data, measurement, p.cut, xlab, background = 'white', cex_legend = 0.8, ...){
+  
+  # set p-val cutoff and get significant genes
+  genes <- rownames(mic.data)[mic.data$p.value <= p.cut]
+ 
+  # sort by positive or negative correlation
+  top.results <- mic.data[genes,]
+  
+  pos <- top.results[top.results$cor > 0,]
+  neg <- top.results[top.results$cor < 0,]
+
+  # plot!
+  ylim = range(expr.data[rownames(top.results),])
+  xlim = range(measurement)
+  
+  # positive correlations
+  cols <- as.character(pos$mod)
+  
+  plot(loess.smooth(measurement, expr.data[rownames(pos)[1],]), type = 'l', col = cols[1], ylim = ylim, xlim = xlim, xlab = xlab, ylab = 'Expression (logCPM)', ...)
+  rect(par("usr")[1],par("usr")[3],par("usr")[2],par("usr")[4],col = background)
+  for(n in 2:nrow(pos)){
+    gene <- rownames(pos)[n]
+    lines(loess.smooth(measurement, expr.data[rownames(pos)[n],]), col = cols[n])
+  }
+
+  # add points to show where actual individuals fall along x axis
+  cols.site <- c("#ffe55c", "#ff8b4e", "#e14d66", "#9c2e7f", "#5f0092", "#000262")
+  legend('top', fill = cols.site, legend = c('MC', 'FT', 'FH', 'CV', 'PL', 'RD'), horiz = T, cex = cex_legend, bty = 'n')
+  points(measurement, rep(ylim[1],length(measurement)), col = cols.site[phys.data$Site], cex = 1.5, lwd = 2)
+  
+  
+  # negative correlations
+  cols <- as.character(neg$mod)
+  
+  plot(loess.smooth(measurement, expr.data[rownames(neg)[1],]), type = 'l', col = cols[1], ylim = ylim, xlim = xlim, xlab = xlab, ylab = NA, ...)
+  rect(par("usr")[1],par("usr")[3],par("usr")[2],par("usr")[4],col = background)
+  for(n in 2:nrow(neg)){
+    gene <- rownames(neg)[n]
+    lines(loess.smooth(measurement, expr.data[rownames(neg)[n],]), col = cols[n])
+  }
+  
+  points(measurement, rep(ylim[1],length(measurement)), col = cols.site[phys.data$Site], cex = 1.5, lwd = 2)
+  
+}
+
+
+# Function to plot which modules are overrepressented in significant genes
+# Shows the proportion of genes in the significant group divided by the overall proportion in all genes. The expectation is around 1, so values much greater than 1 mean there are more genes in the significant group from that module than expected by chance
+plot_mod_proportion <- function(mic.data, p.cut, cor_sign = c('both', 'pos', 'neg'), ylab = 'proportion significant /\ntotal proportion genes', ...){
+  
+  # set p-val cutoff and get significant genes
+  # can get all genes or only those with positive or negative correlations
+  if (cor_sign == 'both'){
+    genes <- rownames(mic.data)[mic.data$p.value <= p.cut]
+  } else if (cor_sign =='pos'){
+    genes <- rownames(mic.data)[mic.data$p.value <= p.cut & mic.data$cor >= 0]
+  } else if (cor_sign == 'neg'){
+    genes <- rownames(mic.data)[mic.data$p.value <= p.cut & mic.data$cor <= 0]
+  }
+  top.results <- mic.data[genes,]
+  
+
+  # plot module proportions
+  prop.mic <- table(top.results$mod)/length(top.results$mod)
+  prop.all <- table(net$colors)/length(net$colors)
+  prop <- prop.mic/prop.all[names(prop.mic)]
+
+  barplot(prop, col = names(prop), ylab = ylab, ...)
+  abline(h = 1, lty = 2)
+}
+
+```
+
+
+```{r plots} 
+
+# Using a p-value cutoff of 0.001 for significant genes
+# plot each measurement and treatment combination
+
+# Leaf water potential and treatment
+#png(file = 'plots/MIC_p_0.001_leaf_WP_treatment.png', width = 9, height = 6,res = 300, units = 'in')
+par(mfrow = c(1,2)) 
+plot_expr_phys(mic.d.wp, phys.d, expr.d, wp.d, 0.001, 'Leaf Water Potential (MPa)', background = 'white')
+#dev.off()
+
+# Leaf water potential and control
+#png(file = 'plots/MIC_p_0.001_leaf_WP_control.png', width = 9, height = 6,res = 300, units = 'in')
+par(mfrow = c(1,2)) 
+plot_expr_phys(mic.c.wp, phys.c, expr.c, wp.c, 0.001, 'Leaf Water Potential (MPa)', background = 'white')
+#dev.off()
+
+# Turgor loss point and treatment
+#png(file = 'plots/MIC_p_0.001_TLP_treatment.png', width = 9, height = 6,res = 300, units = 'in')
+par(mfrow = c(1,2)) 
+plot_expr_phys(mic.d.tlp, phys.d, expr.d, tlp.d, 0.001, 'Turgor Loss Point (MPa)', background = 'white')
+#dev.off()
+
+# Turgor loss point and control
+#png(file = 'plots/MIC_p_0.001_TLP_control.png', width = 9, height = 6,res = 300, units = 'in')
+par(mfrow = c(1,2)) 
+plot_expr_phys(mic.c.tlp, phys.c, expr.c, tlp.c, 0.001, 'Turgor Loss Point (MPa)', background = 'white')
+#dev.off()
+
+
+# Plot barplots showing proportions of modules within significant genes / proportion overall
+#png(file = 'plots/MIC_module_proportion_barplots_all_p_0.001.png', width = 10, height = 8, res = 300, units = 'in')
+par(mfrow = c(2,2), las = 2, mar = c(6,5,4,2))
+plot_mod_proportion(mic.d.wp, 0.001, main = 'Leaf Water Potenial - Treatment')
+plot_mod_proportion(mic.c.wp, 0.001, main = 'Leaf Water Potenial - Control')
+plot_mod_proportion(mic.d.tlp, 0.001, main = 'Turgor Loss Point - Treatment')
+plot_mod_proportion(mic.c.tlp, 0.001, main = 'Turgor Loss Point - Control')
+#dev.off()
+
+# Same barplots, but show top 142 genes (# of significant genes for MIC drought) instead of a pvalue cutoff. This is easier to compare across groups, since there are only a few signficant genes in some sets so overrepresentation is expected.
+
+#png(file = 'plots/MIC_module_proportion_barplots_all_top_142.png', width = 10, height = 8, res = 300, units = 'in')
+par(mfrow = c(2,2), las = 2, mar = c(6,5,4,2))
+plot_mod_proportion(mic.d.wp, 0.001, main = 'Leaf Water Potenial - Treatment')
+plot_mod_proportion(mic.c.wp, mic.c.wp[142,]$p.value, main = 'Leaf Water Potenial - Control')
+plot_mod_proportion(mic.d.tlp, mic.d.tlp[142,]$p.value, main = 'Turgor Loss Point - Treatment')
+plot_mod_proportion(mic.c.tlp, mic.c.tlp[142,]$p.value, main = 'Turgor Loss Point - Control')
+#dev.off()
+
+# Final plot - expression plots and barplot for leaf water potential under water stress treatment
+
+#png(file = 'plots/MIC_p_0.001_leaf_WP_treatment_with_barplot_white.png', width = 8, height = 7, res = 300, units = 'in')
+par(mfrow = c(2,2), las = 2, mar = c(7,5.5,2,0.5), cex.lab = 1.4, cex.axis = 1.3)
+layout(matrix(c(1,2,1,2,3,4), ncol = 2, byrow = T))
+plot_expr_phys(mic.d.wp, phys.d, expr.d, wp.d, 0.001, 'Leaf Water Potential (MPa)', cex_legend = 1, background = 'white')
+plot_mod_proportion(mic.d.wp, 0.001, cor_sign = 'pos', ylim = c(0,9))
+plot_mod_proportion(mic.d.wp, 0.001, cor_sign = 'neg', ylab = NULL, ylim = c(0,9))
+#dev.off()
+
+```

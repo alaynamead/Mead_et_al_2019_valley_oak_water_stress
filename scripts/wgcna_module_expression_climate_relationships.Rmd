@@ -1,0 +1,151 @@
+---
+title: "WGCNA module expression and climate relationships"
+author: "Alayna Mead"
+date: "8/23/2019"
+output: html_document
+---
+
+```{r setup}
+
+library(corrplot)
+library(tidyr)
+
+# climate data
+clim <- read.csv('data/climate_data_by_mom_tree_flint_and_climatewna.csv')
+
+# wgcna data
+load('data/wgcna_results_net_unsigned_merge_0.3_min_50.Rdata')
+
+# experiment design file
+des <- read.csv('data/experiment_design.csv', header = T)
+rownames(des) <- des$sample
+des <- des[order(rownames(des)),]
+# remove outlier samples
+des <- des[rownames(des) != '069-15',]
+des <- des[rownames(des) != '214-14',]
+
+```
+
+
+```{r setup_datasets}
+
+# setup climate data
+
+# check that samples are in same order
+sum(rownames(des) != rownames(net$MEs)) #0
+
+# format climate data by individuals, not moms
+clim.indiv <- as.data.frame(matrix(nrow = nrow(des), ncol = ncol(clim)))
+colnames(clim.indiv) <- colnames(clim)
+rownames(clim.indiv) <- rownames(des)
+
+# add climate data by mom
+for(r in 1:nrow(clim.indiv)){
+  m <- des$family[r]
+  clim.indiv[r,] <- clim[clim$mom == m,]
+}
+
+# organize module expression
+# save module expression as its own object
+me <- net$MEs
+
+# put WGCNA modules in alphabetical order
+me <- me[,order(colnames(me))]
+
+```
+
+
+```{r lm_climate_ME}
+
+# identify treatment, climate, and climate x treatment effects on module expression
+
+# choose climate variables
+vars <- c('MAT', 'tmx', 'MSP', 'cwd', 'AHM', 'elev', 'TD', 'trange')
+
+# look at correlations between vars
+cors <- cor(clim[,vars])
+corrplot(cors, method = 'ellipse')
+
+# get results of module expression ~ climate x treatment
+# organized as list of modules within list of climate variables
+
+res <- list()
+
+for(n in 1:length(vars)){
+  
+ res[[n]] <- lapply(1:ncol(me), function(x) anova(lm(me[,x] ~ des$treatment * clim.indiv[,vars[n]])))
+ names(res[[n]]) <- colnames(me)
+  
+}
+
+names(res) <- vars
+
+
+```
+
+
+```{r MAT_and_ME}
+
+# test whether treatment differences in module expression is significantly associated with temperature, as population module expression seems to cluster into high and low MAT groups
+
+# data setup
+des$site <- factor(des$site, levels = c("MACR", "TEJO", "HUNT", "CENT", "PLAT", "REDI"), labels = c('MC', 'FT', 'FH', 'CV', 'PL', 'RD'), ordered = T)
+
+des$interaction <- interaction(des$treatment, des$site)
+
+# make df with avg module expression by site and treatment
+me.avg <- as.data.frame(matrix(nrow = ncol(net$MEs), ncol = 12))
+colnames(me.avg) <- levels(des$interaction)
+rownames(me.avg) <- colnames(net$MEs)
+
+for(mod in 1:ncol(net$MEs)){
+ 
+  for(group in 1:length(levels(des$interaction))){
+    g <- levels(des$interaction)[group]
+    me.avg[mod, group] <- mean(net$MEs[which(des$interaction == g), mod])
+  }
+}
+
+# get treatment differences
+colnames(me.avg)
+me.avg.diff <- me.avg[,c(2,4,6,8,10,12)] - me.avg[,c(1,3,5,7,9,11)]
+colnames(me.avg.diff) <- gsub('drought1.', '', colnames(me.avg.diff))
+
+# get only interaction and treatment modules
+mod.treat <- c('black', 'grey60', 'darkgreen', 'blue', 'yellow', 'pink', 'midnightblue', 'greenyellow', 'brown')
+me.avg.sub <- me.avg.diff[mod.treat,]
+
+# get climate population averages
+
+# add population info to climate df
+clim$pop <- NA
+for(n in 1:nrow(clim)){
+  clim$pop[n] <- as.character(des[des$family == clim$mom[n],'site'][1])
+}
+
+clim$pop
+# some values are NA because moms aren't present in sequenced individuals info
+# we'll ignore them and only use climate for sequenced individuals
+
+# average climates across moms in same population
+mat.pop <- aggregate(clim$MAT, list(clim$pop), mean)
+barplot(mat.pop$x, names.arg = mat.pop$Group.1, ylim = c(12, 18)) #check
+
+# format data
+me.avg.sub$module <- rownames(me.avg.sub)
+
+me.avg.sub <- gather(me.avg.sub, pop, ME, 1:6)
+me.avg.sub$MAT <- unlist(lapply(1:nrow(me.avg.sub), function(X) mat.pop$x[mat.pop$Group.1 == me.avg.sub$pop[X]]))
+
+# check relationship of change in module expression (absolute value) and MAT
+# populations with a higher MAT have higher changes in module expression for modules with a site x treatment or treatment effect
+
+anova(lm(abs(me.avg.sub$ME) ~ me.avg.sub$MAT))
+summary(lm(abs(me.avg.sub$ME) ~ me.avg.sub$MAT))
+
+# plot MAT and module expression
+plot(me.avg.sub$MAT, abs(me.avg.sub$ME), col = me.avg.sub$module, lwd = 2)
+abline(lm(abs(me.avg.sub$ME) ~ me.avg.sub$MAT))
+text(mat.pop$Group.1, x = mat.pop$x, y = rep(0.4, 6))
+
+```

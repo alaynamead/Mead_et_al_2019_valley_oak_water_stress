@@ -1,0 +1,478 @@
+---
+title: "Differential expression analysis"
+author: "Alayna Mead"
+date: "April 2, 2019"
+output: html_document
+---
+--
+
+```{r setup}
+
+# running R version 3.5.3 (2019-03-11)- Great Truth
+
+library(limma) # version ‘3.36.2’
+library(edgeR) # version ‘3.22.3’
+library(ComplexHeatmap)
+library(circlize)
+
+# get read count file
+counts <- read.csv('data/gene_counts_mapq_20_dups_removed.txt', header = T, check.names = F, row.names = 1)
+
+# get design file
+des <- read.csv('data/experiment_design.csv', header = T)
+des <- des[order(des$sample),]
+des$lane <- as.factor(des$lane)
+des$family <- as.factor(des$family)
+des$library_prep <- as.factor(des$library_prep)
+
+```
+
+
+```{r normalize}
+
+# convert to DGE list object
+dge.counts <- DGEList(counts)
+
+# remove lowly expressed genes - using default settings
+keep <- filterByExpr(dge.counts$counts, min.count = 10, min.total.count = 15)
+counts.filter <- dge.counts[keep,]
+
+# check dimensions
+dim(counts) # [1] 78988    42
+dim(dge.counts$counts) # [1] 78988    42
+dim(counts.filter$counts) # [1] 19459    42
+
+# calculate normalization factors
+norm <- calcNormFactors(counts.filter)
+
+# normalize using voom
+voom.expr <- voom(norm)
+
+# save expression levels as separate object
+expr <- voom.expr$E
+
+# save expression file
+save(voom.expr, file = 'data/gene_expression_normalized_voom.Rdata')
+
+
+```
+
+
+```{r remove_batch_effects}
+
+# This removes batch effects from lane and library prep and outputs
+# a corrected gene expression dataframe. Shouldn't be used for
+# linear modeling.
+
+des.bin <- read.csv('data/experiment_design_binary.csv', header = T)
+
+expr.rba <- removeBatchEffect(expr, batch = des$lane, batch2 = des$library_prep, design = des.bin[,c(2:8)])
+
+par(mfrow = c(1,2))
+plotMDS(expr, col = ifelse(des$treatment == 'control1', 'blue', 'red'), top = Inf)
+plotMDS(expr.rba, col = ifelse(des$treatment == 'control1', 'blue', 'red'), top = Inf)
+
+par(mfrow = c(1,1))
+plot(rowMeans(expr), rowMeans(expr.rba))
+abline(a = 0, b = 1, col = 'red', lty = 2)
+
+write.csv(expr, file = 'data/gene_expression_normalized_voom_batch_effects_removed.csv', quote = F, row.names = T)
+
+
+```
+
+
+```{r MDS_plot}
+
+# visualize clustering
+plotMDS(voom.expr, top = Inf, col = ifelse(des$treatment == 'control1', 'blue', 'red'))
+
+```
+
+
+```{r remove_outlier}
+
+# remove 069-15 sample, which is clear outlier
+expr <- expr[,colnames(expr) != '069-15']
+colnames(expr)
+
+voom.expr <- voom.expr[,colnames(voom.expr) != '069-15']
+
+# make new design file
+des <- des[des$sample != '069-15',]
+des$sample
+
+plotMDS(voom.expr, top = Inf, col = ifelse(des$treatment == 'control1', 'blue', 'red'))
+
+```
+
+
+```{r DE_treatment}
+
+# identify genes DE between treatments across all populations
+
+# model
+mod <- model.matrix(~0+treatment+library_prep+lane, des)
+
+# analysis
+fit.t <- lmFit(voom.expr, mod)
+cont.matrix <- makeContrasts(dvsC=treatmentdrought1-treatmentcontrol1, levels = mod)
+fit.t <- contrasts.fit(fit.t, cont.matrix)
+fit.t <- eBayes(fit.t)
+
+# number of DE genes
+summary(decideTests(fit.t))
+
+# look at top genes
+colnames(fit.t$cov.coefficients)
+topTable(fit.t, coef = 1)
+
+# save all gene info to csv
+top.all.treatment <- topTable(fit.t, coef = 1, number = Inf)
+write.table(top.all.treatment, 'output/DE_genes_treatment.csv', quote = F, col.names = T, row.names = T, sep = ',')
+top.sig.treatment <- topTable(fit.t, coef = 1, number = Inf, p.value = 0.05)
+
+genes.sig.treatment <- rownames(top.sig.treatment)
+genes.sig.up.treatment <- rownames(top.sig.treatment)[top.sig.treatment$logFC > 0]
+genes.sig.down.treatment <- rownames(top.sig.treatment)[top.sig.treatment$logFC < 0]
+
+```
+
+        dvsC
+Down     294
+NotSig 18770
+Up       395
+
+
+```{r DE_population}
+
+# identify genes DE between populations
+
+# model
+mod <- model.matrix(~0+site+lane+library_prep, des)
+
+# analysis
+fit.s <- lmFit(voom.expr, mod)
+cont.matrix <- makeContrasts(siteCENT-siteHUNT, siteCENT-siteMACR, siteCENT-sitePLAT, siteCENT-siteREDI, siteCENT-siteTEJO, siteHUNT-siteMACR, siteHUNT-sitePLAT, siteHUNT-siteREDI, siteHUNT-siteTEJO, siteMACR-sitePLAT, siteMACR-siteREDI, siteMACR-siteTEJO, sitePLAT-siteREDI, sitePLAT-siteTEJO, siteREDI-siteTEJO, levels = mod)
+fit.s <- contrasts.fit(fit.s, cont.matrix)
+fit.s <- eBayes(fit.s)
+
+# results
+summary(decideTests(fit.s))
+
+colnames(fit.s$cov.coefficients)
+
+# not going to save toptable for all contrasts here
+
+```
+
+       siteCENT - siteHUNT siteCENT - siteMACR siteCENT - sitePLAT
+Down                     2                  15                   6
+NotSig               19457               19421               19430
+Up                       0                  23                  23
+       siteCENT - siteREDI siteCENT - siteTEJO siteHUNT - siteMACR
+Down                     9                   0                  74
+NotSig               19430               19459               19365
+Up                      20                   0                  20
+       siteHUNT - sitePLAT siteHUNT - siteREDI siteHUNT - siteTEJO
+Down                     0                   0                   0
+NotSig               19457               19459               19459
+Up                       2                   0                   0
+       siteMACR - sitePLAT siteMACR - siteREDI siteMACR - siteTEJO
+Down                     2                   6                   2
+NotSig               19456               19448               19457
+Up                       1                   5                   0
+       sitePLAT - siteREDI sitePLAT - siteTEJO siteREDI - siteTEJO
+Down                     0                   0                   1
+NotSig               19459               19459               19458
+Up                       0                   0                   0
+
+```{r DE_population_by_treatment}
+
+# identify genes DE between treatments and populations (GxE)
+
+# model
+des$group <- interaction(des$site, des$treatment)
+mod <- model.matrix(~0+group+lane+library_prep, des)
+
+# analysis
+fit.sxt <- lmFit(voom.expr, mod)
+cont.matrix <- makeContrasts(
+  CENT.t = groupCENT.drought1 - groupCENT.control1,
+  HUNT.t = groupHUNT.drought1 - groupHUNT.control1,
+  MACR.t = groupMACR.drought1 - groupMACR.control1,
+  PLAT.t = groupPLAT.drought1 - groupPLAT.control1,
+  REDI.t = groupREDI.drought1 - groupREDI.control1,
+  TEJO.t = groupTEJO.drought1 - groupTEJO.control1,
+  levels = mod)
+fit.sxt <- contrasts.fit(fit.sxt, cont.matrix)
+fit.sxt <- eBayes(fit.sxt)
+
+# results
+summary(decideTests(fit.sxt))
+
+# get top genes
+colnames(fit.sxt$cov.coefficients)
+
+# save results for all populations
+sites <- c('CV', 'FH', 'MC', 'PL', 'RD', 'FT')
+
+for(n in 1:6){
+  
+  assign(paste('top.all.', sites[n], sep = ''), topTable(fit.sxt, coef = n, number = Inf))
+  top <- topTable(fit.sxt, coef = n, number = Inf)
+  
+  write.table(
+    top,
+    paste('output/DE_genes_population_', sites[n], '.csv', sep = '' ),
+    quote = F, col.names = T, row.names = T, sep = ',')
+  
+}
+
+# get list of all significant genes by each population (all, upregulated, and downregulated)
+for(n in 1:6){
+  
+  top <- topTable(fit.sxt, coef = n, number = Inf, p.value = 0.05)
+  assign(paste('top.sig.', sites[n], sep = ''), top)
+  write.table(
+    top,
+    paste('output/DE_genes_population_', sites[n], '.csv', sep = '' ),
+    quote = F, col.names = T, row.names = T, sep = ',')
+  assign(paste('genes.sig.', sites[n], sep = ''), rownames(top))
+  assign(paste('genes.sig.up.', sites[n], sep = ''), rownames(top)[top$logFC > 0])
+  assign(paste('genes.sig.down.', sites[n], sep = ''), rownames(top)[top$logFC < 0])
+  
+}
+
+# quick look at overlap in DE genes
+vennCounts(decideTests(fit.sxt))
+vennDiagram(decideTests(fit.sxt)[,2:5], include = c('up', 'down'))
+
+# get the names of genes DE in multiple populations
+dt <- as.data.frame(decideTests(fit.sxt))
+dt[rowSums(dt) > 1,]
+rownames(dt[rowSums(dt) > 1,])
+# "m01oak00239cT" "m01oak00925cC" "m01oak12555CC" "m01oak14960cC" "m01oak22045JT"
+ 
+
+```
+
+       CENT.t HUNT.t MACR.t PLAT.t REDI.t TEJO.t
+Down        0      2    121      5     37      0
+NotSig  19459  19447  19096  19452  19371  19459
+Up          0     10    242      2     51      0
+
+
+```{r save_data}
+
+save(fit.s, fit.t, fit.sxt, file = 'output/eBayes_DE_results.Rdata')
+
+```
+
+
+```{r volcano_plots}
+
+# make volcano plots for each test
+
+# treatment
+
+# using built in function
+volcanoplot(fit.t, coef = 1)
+
+# plotting with the significant genes highlighted
+
+#png(file = 'plots/volcano_plot_treatment.png', width = 8, height = 6, res = 300, units = 'in')
+par(mfrow = c(1,1))
+plot(top.all.treatment[,1], -log10(top.all.treatment[,5]), col = ifelse(top.all.treatment[,5] < 0.05, 'red', 'black'), pch = 16, cex = 0.4, xlab = 'Log2 Fold Change', ylab = '-log10(adjusted P-value)', main = 'Treatment')
+#dev.off()
+
+# population x treatment
+
+# plot all population x treatment genes by site for comparison
+
+#png(file = 'plots/volcano_plot_site_by_treatment.png', width = 9, height = 7, res = 300, units = 'in')
+par(mfrow = c(2,3))
+for(n in 1:6){
+  
+  top <- topTable(fit.sxt, coef = n, number = Inf)
+  plot(top[,1], -log10(top[,5]), col = ifelse(top[,5] < 0.05, 'red', 'black'), pch = 16, cex = 0.4, xlab = 'Log2 Fold Change', ylab = '-log10(adjusted P-value)', main = paste('Population: ', sites[n], sep = ''))
+}
+#dev.off()
+
+# using same scale
+
+#png(file = 'plots/volcano_plot_site_by_treatment_scaled.png', width = 9, height = 7, res = 300, units = 'in')
+par(mfrow = c(2,3))
+for(n in 1:6){
+  
+  top <- topTable(fit.sxt, coef = n, number = Inf)
+  plot(top[,1], -log10(top[,5]), col = ifelse(top[,5] < 0.05, 'red', 'black'), pch = 16, cex = 0.4, xlab = 'Log2 Fold Change', ylab = '-log10(adjusted P-value)', main = paste('Population: ', sites[n], sep = ''), xlim = c(-6.5,6.5), ylim = c(0,3.2))
+}
+#dev.off()
+
+```
+
+
+```{r venn_diagram}
+
+# make prettier venn diagram showing overlap in treatment x population DE genes among populations
+
+par(mfrow = c(1,1))
+
+vennDiagram(decideTests(fit.sxt)[,c(3,2,4,5)], include = c('up', 'down'), circle.col = c("#ffe55c", "#e14d66", "#5f0092", "#000262"), names = c('MC', 'FH', 'PL', 'RD'))
+
+ 
+```
+
+
+```{r gene_expression_heatmap}
+
+# heatmap of expression for treatment DE genes
+
+des$site <- factor(des$site, levels = c('MACR', 'TEJO', 'HUNT', 'CENT', 'PLAT', 'REDI'), labels = c('MC', 'FT', 'FH', 'CV', 'PL', 'RD'))
+des$treatment <- factor(des$treatment, levels = c('control1', 'drought1'), labels = c('Control 1', "Treatment 1"))
+
+
+expr.t <- expr[genes.sig.treatment,]
+
+# set up colors
+cols <- colorRamp2(breaks = as.vector(quantile(unlist(expr.t))), colors = c('darkslateblue', 'lightcyan2', 'white', 'mistyrose','firebrick3'))
+cols.s <- c("#ffe55c", "#ff8b4e", "#e14d66", "#9c2e7f", "#5f0092", "#000262")
+
+# plot with genes on x and samples on y
+ha <- HeatmapAnnotation(df = des[,2:3], col = list(treatment = c('Control 1' = 'dodgerblue2', 'Treatment 1' = 'firebrick1'), site = c(MC = cols.s[1], FT = cols.s[2], FH = cols.s[3], CV = cols.s[4], PL = cols.s[5], RD = cols.s[6])))
+
+png(file = 'plots/heatmap_DE_treatment_genes_vertical.png', res = 300, height = 8, width = 8, units = 'in')
+Heatmap(expr.t, cluster_columns = T, cluster_rows = T, col = cols, row_names_side = 'left', show_row_names = F, column_names_side = 'top', heatmap_legend_param = list(title = 'gene\nexpression'), column_names_gp = gpar(fontsize = 10), top_annotation = ha)
+dev.off()
+
+```
+
+
+
+```{r gene_annotations}
+
+# get annotations for genes
+
+# need to match oak genes to TAIR gene info
+
+# get gene info
+# read data file downloaded from TAIR
+# this has all TAIR genes and info
+tair.data <- read.table('data/TAIR_genes_data_2017-07-28.txt', header = T, check.names = F, sep = '\t', fill = T, quote = "")
+colnames(tair.data) <- c("locus_ID","gene_model_name", "gene_model_description", "gene_model_type", "primary_gene_symbol", "all_gene_symbols")
+# remove last line, with note about genes not found
+tail(tair.data)
+dim(tair.data)
+tair.data <- tair.data[-nrow(tair.data),]
+tail(tair.data)
+
+# read TAIR/oak gene pair file
+# this matches the TAIR gene name to Quercus lobata gene names
+tair.genes <- read.table('data/TAIR_genes.txt', sep = '\t', quote = "")
+colnames(tair.genes) <- c('oak_gene', 'TAIR_gene')
+head(tair.genes)
+
+# read Pfam data (from annotation file)
+pfam.data <- read.table('data/Pfam_genes.txt', header = F, check.names = F, sep = '\t', quote = "")
+colnames(pfam.data) <- c('oak_gene', 'Pfam_ID', 'description')
+
+# add oak gene names to tair.data
+tair.data$oak_genes <- tair.genes$oak_gene[match(rownames(tair.data), tair.genes$TAIR_gene)]
+# checked against TAIR_genes.txt file - looks good
+# make oak genes first column
+tair.data <- tair.data[,c(7,1:6)]
+
+head(tair.data)
+
+# combine all gene info into df
+genes.a <- rownames(voom.expr$E)
+
+gene.info <- as.data.frame(matrix(ncol = 5, nrow = length(genes.a)))
+rownames(gene.info) <- genes.a
+colnames(gene.info) <- c('tair_id', 'tair_gene_symbol', 'tair_description', 'pfam_id', 'pfam_description')
+
+for(g in 1:length(genes.a)){
+  
+  gene <- genes.a[g]
+  
+  # get TAIR ID
+  at <- rownames(tair.data[na.omit(tair.data$oak_genes == gene),])
+  # if no match (returns length 0), use 'none'
+  if(length(at)==1){
+    gene.info[g,1] <- at
+  }else if(length(at)==0){
+    gene.info[g,1] <- 'none'
+  }else if(length(at)>1){
+    gene.info[g,1] <- paste(rownames(tair.data[na.omit(tair.data$oak_genes == gene),]), collapse = ", ")
+  }
+  
+  # get TAIR gene ID
+  at.s <- tair.data[rownames(tair.data[na.omit(tair.data$oak_genes == gene),]), 6]
+  if(length(at.s)==1){
+    gene.info[g,2] <- as.character(at.s)
+  }else if(length(at.s)==0){
+    gene.info[g,2] <- 'none'
+  }else if(length(at.s)>1){
+    gene.info[g,2] <- paste(tair.data[rownames(tair.data[na.omit(tair.data$oak_genes == gene),]), 6], collapse = ", ")
+  }
+  
+  # get TAIR description
+  at.d <- tair.data[rownames(tair.data[na.omit(tair.data$oak_genes == gene),]), 3]
+  if(length(at.d)==1){
+    gene.info[g,3] <- as.character(at.d)
+  }else if(length(at.d)==0){
+    gene.info[g,3] <- 'none'
+  }else if(length(at.d)>1){
+    gene.info[g,3] <- paste(tair.data[rownames(tair.data[na.omit(tair.data$oak_genes == gene),]), 3], collapse = ' /// ')
+  }
+  
+  # get Pfam IDs (may be >1 per gene)
+  pf <- as.character(pfam.data[pfam.data$oak_gene == gene,2])
+  if(length(pf)==0){
+    gene.info[g,4] <- 'none'
+  }else if(length(pf) == 1){
+    gene.info[g,4] <- pf
+  }else if(length(pf) > 1){
+    gene.info[g,4] <- paste(as.character(pfam.data[pfam.data$oak_gene == gene,2]), collapse = ', ')
+  }
+  
+  # get Pfam descriptions (may be >1 per gene)
+  pf <- as.character(pfam.data[pfam.data$oak_gene == gene,3])
+  if(length(pf)==0){
+    gene.info[g,5] <- 'none'
+  }else if(length(pf) == 1){
+    gene.info[g,5] <- pf
+  }else if(length(pf) > 1){
+    gene.info[g,5] <- paste(as.character(pfam.data[pfam.data$oak_gene == gene,3]), collapse = ' /// ')
+  }
+}
+
+head(gene.info)
+
+# function to get info for a given list of genes
+get.info <- function(genes, gene_info_df){
+  return(gene_info_df[genes,])
+}
+
+# get info for significant genes
+gene.info.FH <- get.info(rownames(top.sig.FH), gene.info)
+gene.info.MC <- get.info(rownames(top.sig.MC), gene.info)
+gene.info.RD <- get.info(rownames(top.sig.RD), gene.info)
+gene.info.PL <- get.info(rownames(top.sig.PL), gene.info)
+gene.info.treatment <- get.info(rownames(top.sig.treatment), gene.info)
+
+write.table(cbind(top.sig.FH, gene.info.FH), file = 'output/DE_genes_significant_site_by_treatment_FH.txt', sep = '\t', quote = F)
+write.table(cbind(top.sig.MC, gene.info.MC), file = 'output/DE_genes_significant_site_by_treatment_MC.txt', sep = '\t', quote = F)
+write.table(cbind(top.sig.RD, gene.info.RD), file = 'output/DE_genes_significant_site_by_treatment_RD.txt', sep = '\t', quote = F)
+write.table(cbind(top.sig.PL, gene.info.PL), file = 'output/DE_genes_significant_site_by_treatment_PL.txt', sep = '\t', quote = F)
+write.table(cbind(top.sig.treatment, gene.info.treatment), file = 'output/DE_genes_significant_treatment.txt', sep = '\t', quote = F)
+
+# save gene info df
+save(gene.info, file = 'data/gene_Pfam_and_TAIR_info_dataframe.Rdata')
+
+# save gene lists
+save(genes.sig.treatment, genes.sig.MC, genes.sig.FH, genes.sig.RD, genes.sig.PL, file = 'data/significant_DE_gene_lists.Rdata')
+save(genes.sig.up.treatment, genes.sig.down.treatment, genes.sig.up.MC, genes.sig.up.FH, genes.sig.up.RD, genes.sig.up.PL, genes.sig.down.MC, genes.sig.down.FH, genes.sig.down.RD, genes.sig.down.PL, file = 'data/significant_DE_gene_lists_by_direction.Rdata')
+
+```

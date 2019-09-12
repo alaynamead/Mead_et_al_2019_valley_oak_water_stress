@@ -1,0 +1,373 @@
+---
+title: "Get population climate data and plot map"
+author: "Alayna Mead"
+date: "September 4, 2018"
+output: html_document
+---
+
+
+```{r setup}
+
+library(raster)
+library(rgdal)
+library(ncdf4)
+library(ggmap)
+library(gridBase)
+library(grid)
+library(gridExtra)
+
+```
+
+
+```{r load_and_analyze_flint_data}
+
+# Get data for all variables
+# This data is the historical water year data (1951-1980)
+# Dataset is from here: http://climate.calcommons.org/node/1129 
+# (need an account to sign in)
+
+# put all climate variables in list
+clim <- list()
+
+clim[[1]] <- raster('data/flint_climate/aet1951_1980_ave_HST_1534292705.tif')
+clim[[2]] <- raster('data/flint_climate/aprpck1951_1980_ave_HST_1534294046.tif')
+clim[[3]] <- raster('data/flint_climate/cwd1951_1980_ave_HST_1534292958.tif')
+clim[[4]] <- raster('data/flint_climate/pet1951_1980_ave_HST_1534293198.tif')
+clim[[5]] <- raster('data/flint_climate/ppt1951_1980_ave_HST_1534293341.tif')
+clim[[6]] <- raster('data/flint_climate/rch1951_1980_ave_HST_1534293572.tif')
+clim[[7]] <- raster('data/flint_climate/run1951_1980_ave_HST_1534293840.tif')
+clim[[8]] <- raster('data/flint_climate/tmn1951_1980_ave_HST_1534294390.tif')
+clim[[9]] <- raster('data/flint_climate/tmx1951_1980_ave_HST_1534294244.tif')
+
+names(clim) <- c('aet', 'aprpck', 'cwd', 'pet', 'ppt', 'rch', 'run', 'tmn', 'tmx')
+
+# get information for mother trees
+
+trees <- read.csv('data/phys_data.csv')
+trees <- trees[-which(duplicated(trees$mom)),]
+
+coords <- trees[,38:37]
+
+# convert coordinate format to that used in Flint geotiff data
+
+# turn coords into spatial points object
+crs <- CRS("+proj=longlat +datum=WGS84") # WGS84 is the default GPS coordinate system
+points <- SpatialPoints(coords, proj4string=crs)
+# transform from WGS84 to Albers
+# info on what parameters to set here: https://proj4.org/operations/projections/aea.html
+clim[[1]] # copy parameters  from raster data ('coord. ref.')
+points_transform <- spTransform(points, CRS('+proj=aea +lat_1=34 +lat_2=40.5 +lat_0=0 +lon_0=-120 +x_0=0 +y_0=-4000000 +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +units=m +no_defs'))
+
+coordinates(points_transform) # check format
+coords2 <- coordinates(points_transform) # rename
+
+# make dataframe for climate data - one row for each mother tree
+dat <- as.data.frame(matrix(nrow = nrow(trees), ncol = length(clim)))
+colnames(dat) <- names(clim)
+rownames(dat) <- rownames(coords2)
+
+# get data for coordinates for all climate variables
+for(n in 1:length(clim)){
+  dat[,n] <- extract(clim[[n]], coords2)
+}
+
+dat$trange <- dat$tmx - dat$tmn
+dat$elev <- trees$Elevation.m.
+
+rownames(dat) <- unique(trees$mom)
+
+
+trees$Site <- factor(trees$Site, labels = c('MC', 'FT', 'FH', 'CV', 'PL', 'RD'), levels = c('MACR', 'TEJO', 'HUNT', 'CENT', 'PLAT', 'REDI'))
+
+cols <- c("#ffe55c", "#ff8b4e", "#e14d66", "#9c2e7f", "#5f0092", "#000262")
+
+par(mfrow = c(2,2))
+# look at range in data
+# boxplot
+for(n in 1:ncol(dat)){
+  boxplot(dat[,n] ~ trees$Site, col = cols, main = colnames(dat)[n])
+}
+
+# stripchart
+# par(mfrow =c(2,2))
+#png(file = 'plots/climate_variables_by_site_flint.png', res = 300, height = 6, width = 9, units = 'in')
+par(mfrow = c(3,4), mar = c(3,3,3,2))
+for(n in 1:ncol(dat)){
+  stripchart(dat[,n] ~ trees$Site, vertical = T, method = 'jitter', cex = 1.5, pch = 1, col = cols, main = colnames(dat)[n], ylab = '')
+}
+#dev.off()
+
+# mostly not too much variation within populations
+# PL more variable - has some altitude variation
+# exceptions:
+# rch, run, tmx variable in PL 
+# aet variable in FH, PL, RD
+
+
+# save in pretty format
+mom_flint_climate <- dat
+mom_flint_climate$site <- trees$Site
+mom_flint_climate$mom <- trees$mom
+mom_flint_climate <- mom_flint_climate[,c(11,12,1:10)]
+
+```
+
+
+```{r load_and_analyze_climate_wna_data}
+
+# get bioclim variables
+# these are historical, yearly data for 1961-199
+# downloaded from here: https://adaptwest.databasin.org/pages/adaptwest-climatena
+# script assumes these are saved in 'data/climate_WNA/'
+
+# convert coordinates
+# use projection info here: http://www.cacpd.org.s3-website-us-west-2.amazonaws.com/climate_normals/NA_ReadMe.txt
+# following: https://stackoverflow.com/questions/30287065/convert-lambert-conformal-conic-projection-to-wgs84-in-r
+
+crs <- CRS("+proj=longlat +datum=WGS84")
+p <- SpatialPoints(coords, proj4string=crs)
+g <- spTransform(p, CRS("+proj=lcc +lat_1=49 +lat_2=77 +lat_0=0 +lon_0=-95 +datum=WGS84"))
+
+coordinates(g)
+
+# import all variables
+vars <- c('AHM', 'bFFP', 'CMD', 'DD_0', 'DD_18', 'DD18', 'DD5', 'eFFP', 'EMT', 'Eref', 'EXT', 'FFP', 'MAP', 'MAR', 'MAT', 'MCMT', 'MSP', 'MWMT', 'NFFD', 'PAS', 'PPT_sm', 'PPT_wt', 'RH', 'SHM', 'Tave_sm', 'Tave_wt', 'TD')
+
+# make list of variables
+clim_nc <- list()
+for(n in 1:length(vars)){
+  clim_nc[[n]] <- raster(paste('data/climate_WNA/', vars[n], '.nc', sep = ''))
+}
+names(clim_nc) <- vars
+
+# extract data from raster for coordinates
+dat_nc <- as.data.frame(matrix(ncol = length(vars), nrow = nrow(coords)))
+colnames(dat_nc) <- vars
+rownames(dat_nc) <- trees$mom
+for(n in 1:length(vars)){
+  dat_nc[,n] <- extract(clim_nc[[n]], coordinates(g))
+  print(c('done with var', n), quote = F)
+}
+
+# look at range in data
+# boxplots
+par(mfrow = c(2,2))
+for(n in 1:ncol(dat_nc)){
+  boxplot(dat_nc[,n] ~ trees$Site, col = cols, main = colnames(dat_nc)[n])
+}
+
+# stripchart
+#par(mfrow =c(2,2))
+
+#png(file = 'plots/climate_variables_by_site_climate_wna.png', res = 300, height = 9, width = 13, units = 'in')
+par(mfrow = c(5,6), mar = c(3,3,3,2))
+for(n in 1:ncol(dat_nc)){
+  stripchart(dat_nc[,n] ~ trees$Site, vertical = T, method = 'jitter', cex = 1.5, pch = 1, col = cols, main = colnames(dat_nc)[n])
+}
+#dev.off()
+
+# again not too much variation
+# PL somewhat variable in bFFP, all DD vars, MAT, MWMT, Tave_sm
+
+```
+
+```{r save_data}
+
+# combine flint and climate wna datasets
+climate <- cbind(dat, dat_nc)
+climate$mom <- rownames(climate)
+climate <- climate[c(39,1:38)]
+
+# save
+write.csv(climate, file = 'data/climate_data_by_mom_tree_flint_and_climatewna.csv', quote = F, row.names = F)
+
+
+```
+
+
+```{r map}
+ 
+# get map
+map_bw <- get_stamenmap(c(top = 42.3, right = -113.5, bottom = 32, left = -125), maptype = 'toner-background', zoom = 6)
+ggmap(map_bw)
+
+# set up for plotting site points
+sites <- coords[c(4,11,16,21,27,33),] # get one coordinate for each site
+
+cols <- c("#ffe55c", "#ff8b4e", "#e14d66", "#9c2e7f", "#5f0092", "#000262")
+cols2 <- cols[c(4,3,2,1,5,6)] # reorder colors
+
+# plot map
+m <- ggmap(map_bw) + labs(x = '', y ='')
+m <- m + scale_x_continuous(limits = c(-124, -114))
+m <- m + geom_point(aes(x = Longitude, y = Latitude), data = sites, alpha = 1, show.legend = F, size = 5,  fill = cols2, color = 'grey10', shape = 21, stroke = 1.3 )
+m <- m + geom_text(data = sites, aes(x = Longitude, y = Latitude, label = c('Centerville','Fort Hunter Liggett', 'Fort Tejon', 'Malibu Creek','Platina','Redding')), color = 'grey10', size = 7, hjust=-.1, vjust=.5, show.legend = F)
+plot(m)
+
+ggsave(file = 'plots/map_with_sample_locations.png', device = 'png', width = 8, height = 8, units = 'in', dpi = 300)
+
+t.ax <- 10 # axis text size
+t.axt <- 12 # axis title text size
+t.m <-  14 # main title text size
+
+# barplots of climate data
+p1 <- ggplot(as.data.frame(aggregate(climate$MAT, by = list(trees$Site), mean)))
+p1 <- p1 + geom_point(aes(x=Group.1, y=x), color = cols, size = 3)
+p1 <- p1 + coord_cartesian(ylim=c(14,18))
+p1 <- p1 + labs(title = 'Mean Annual\nTemperature')
+p1 <- p1 + ylab(expression(~degree~ C))
+p1 <- p1 + xlab('')
+p1 <- p1 + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),panel.background = element_blank(), axis.line = element_line(colour = "black"), plot.title = element_text(size = t.m, hjust = 0.5), axis.text = element_text(size = t.ax, color = 'black'), axis.title = element_text(size = t.axt, color = 'black'))
+print(p1)
+
+p2 <- ggplot(as.data.frame(aggregate(climate$tmx, by = list(trees$Site), mean)))
+p2 <- p2 + geom_point(aes(x=Group.1, y=x), color = cols, size = 3)
+p2 <- p2 + coord_cartesian(ylim=c(20,26))
+p2 <- p2 + labs(title = 'Maximum\nTemperature')
+p2 <- p2 + ylab(expression(~degree~ C))
+p2 <- p2 + xlab('')
+p2 <- p2 + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),panel.background = element_blank(), axis.line = element_line(colour = "black"), plot.title = element_text(size = t.m, hjust = 0.5), axis.text = element_text(size = t.ax, color = 'black'), axis.title = element_text(size = t.axt, color = 'black'))
+print(p2)
+
+p3 <- ggplot(as.data.frame(aggregate(climate$MSP, by = list(trees$Site), mean)))
+p3 <- p3 + geom_point(aes(x=Group.1, y=x), color = cols, size = 3)
+p3 <- p3 + coord_cartesian(ylim=c(10,100))
+p3 <- p3 + labs(title = 'May-September\nPrecipitation')
+p3 <- p3 + ylab('mm')
+p3 <- p3 + xlab('')
+p3 <- p3 + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),panel.background = element_blank(), axis.line = element_line(colour = "black"), plot.title = element_text(size = t.m, hjust = 0.5), axis.text = element_text(size = t.ax, color = 'black'), axis.title = element_text(size = t.axt, color = 'black'))
+print(p3)
+
+p4 <- ggplot(as.data.frame(aggregate(climate$cwd, by = list(trees$Site), mean)))
+p4 <- p4 + geom_point(aes(x=Group.1, y=x), color = cols, size = 3)
+p4 <- p4 + coord_cartesian(ylim=c(600,1150))
+p4 <- p4 + labs(title = 'Climatic Water\nDeficit')
+p4 <- p4 + ylab('mm')
+p4 <- p4 + xlab('')
+p4 <- p4 + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),panel.background = element_blank(), axis.line = element_line(colour = "black"), plot.title = element_text(size = t.m, hjust = 0.5), axis.text = element_text(size = t.ax, color = 'black'), axis.title = element_text(size = t.axt, color = 'black'))
+print(p4)
+
+p5 <- ggplot(as.data.frame(aggregate(climate$AHM, by = list(trees$Site), mean)))
+p5 <- p5 + geom_point(aes(x=Group.1, y=x), color = cols, size = 3)
+p5 <- p5 + coord_cartesian(ylim=c(25,95))
+p5 <- p5 + labs(title = 'Annual Heat\nMoisture Index')
+p5 <- p5 + ylab('')
+p5 <- p5 + xlab('')
+p5 <- p5 + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),panel.background = element_blank(), axis.line = element_line(colour = "black"), plot.title = element_text(size = t.m, hjust = 0.5), axis.text = element_text(size = t.ax, color = 'black'), axis.title = element_text(size = t.axt, color = 'black'))
+print(p5)
+
+p6 <- ggplot(as.data.frame(aggregate(climate$elev, by = list(trees$Site), mean)))
+p6 <- p6 + geom_point(aes(x=Group.1, y=x), color = cols, size = 3)
+p6 <- p6 + coord_cartesian(ylim=c(100,1000))
+p6 <- p6 + labs(title = 'Elevation')
+p6 <- p6 + ylab(expression('M'))
+p6 <- p6 + xlab('')
+p6 <- p6 + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),panel.background = element_blank(), axis.line = element_line(colour = "black"), plot.title = element_text(size = t.m, hjust = 0.5), axis.text = element_text(size = t.ax, color = 'black'), axis.title = element_text(size = t.axt, color = 'black'))
+print(p6)
+
+########################################################
+# plot map and plots together
+
+# set up matrix arrangement
+mat <- matrix(c(1,1,1,2,5,
+                1,1,1,3,6,
+                1,1,1,4,7),
+              ncol = 5, byrow = T)
+
+
+# just plot
+grid.arrange(m,p1,p3,p5,p2,p4,p6, layout_matrix = mat)
+
+# save to grob, then to file
+all <- arrangeGrob(m,p1,p3,p5,p2,p4,p6, layout_matrix = mat, vp=viewport(width=0.95, height=1))
+
+ggsave(file = 'plots/map_and_climate_variables.pdf', plot = all, device = 'pdf', width = 11, height = 7, units = 'in')
+
+# note: edited water color in gimp
+
+```
+
+Climate variable abbreviations
+
+################################################################
+Climate WNA:
+
+1) Annual variables:
+
+Directly calculated annual variables:
+
+MAT              mean annual temperature (°C),
+
+MWMT           mean warmest month temperature (°C),
+
+MCMT            mean coldest month temperature (°C),
+
+TD                   temperature difference between MWMT and MCMT, or continentality (°C),
+
+MAP               mean annual precipitation (mm),
+
+MSP                May to September precipitation (mm),
+
+AHM  annual heat-moisture index (MAT+10)/(MAP/1000))
+
+SHM               summer heat-moisture index ((MWMT)/(MSP/1000))
+
+           
+
+Derived annual variables:
+
+DD<0              degree-days below 0°C, chilling degree-days
+
+DD>5              degree-days above 5°C, growing degree-days
+
+DD<18            degree-days below 18°C, heating degree-days
+
+DD>18            degree-days above 18°C, cooling degree-days
+
+NFFD              the number of frost-free days
+
+FFP                 frost-free period
+
+bFFP               the day of the year on which FFP begins
+
+eFFP                the day of the year on which FFP ends
+
+PAS                 precipitation as snow (mm) between August in previous year and July in current year
+
+EMT                extreme minimum temperature over 30 years
+
+EXT                extreme maximum temperature over 30 years
+
+Eref                 Hargreaves reference evaporation (mm)
+
+CMD               Hargreaves climatic moisture deficit (mm)
+
+MAR               mean annual solar radiation (MJ m‐2 d‐1)
+
+RH                  mean annual relative humidity (%)
+
+ 
+2) Seasonal variables:
+
+Seasons:
+
+Winter (_wt): Dec. (prev. yr) - Feb for annual, Jan, Feb, Dec for normals
+
+Spring (_sp): March, April and May
+
+Summer (_sm): June, July and August
+
+Autumn (_at): September, October and November 
+
+###############################################################
+Flint dataset:
+
+Actual evapotranspiration - aet
+April 1 snowpack - aprpck
+Climatic water deficit - cwd
+Maximum monthly temperature - tmx
+Minimum monthly temperature - tmn
+Potential evapotranspiration - pet
+Precipitation - ppt
+Recharge - rch
+Runoff - run

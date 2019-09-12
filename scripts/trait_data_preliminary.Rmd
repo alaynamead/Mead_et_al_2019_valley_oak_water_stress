@@ -1,0 +1,170 @@
+---
+title: "Trait data preliminary analysis and data cleanup"
+author: "Alayna Mead"
+date: "July 28, 2018"
+output: html_document
+---
+
+```{r setup}
+
+dat <- read.csv('data/phys_data.csv', header = T, check.names = F)
+
+```
+
+```{r cleanup}
+
+# clean data
+# change treatment names
+dat$Treatment <- gsub('c0', 'control1', dat$Treatment)
+dat$Treatment <- gsub('c10', 'control2', dat$Treatment)
+dat$Treatment <- gsub('d10', 'drought1', dat$Treatment)
+dat$Treatment <- gsub('d20', 'drought2', dat$Treatment)
+
+# make 'mom' numbers and treatment factors
+dat$mom <- as.factor(dat$mom)
+dat$Treatment <- as.factor(dat$Treatment)
+
+
+plot(dat$TLP_mpa_1)
+plot(dat$TLP_mpa_2)
+plot(dat$TLP_avg)
+
+
+# make outliers NA
+dat$TLP_avg[c(46,71)] <- NA
+dat$TLP_mpa_1[c(46,71)] <- NA
+dat$TLP_mpa_2[c(46,71)] <- NA
+plot(dat$TLP_avg)
+plot(dat$TLP_mpa_1)
+plot(dat$TLP_mpa_2)
+
+plot(dat$soil_water_potential_1)
+plot(dat$soil_water_potential_2)
+plot(dat$soil_WP_avg)
+
+plot(dat$leaf_water_potential_1)
+plot(dat$leaf_water_potential_2)
+plot(dat$leaf_WP_avg)
+
+```
+
+
+```{r LWP_preliminary}
+
+# look at data
+plot(dat$leaf_water_potential_1, col = c("lightblue2", "coral1", "dodgerblue", "firebrick3")[dat$Treatment])
+plot(dat$leaf_water_potential_2, col = c("lightblue2", "coral1", "dodgerblue", "firebrick3")[dat$Treatment])
+plot(dat$leaf_WP_avg, col = c("lightblue2", "coral1", "dodgerblue", "firebrick3")[dat$Treatment])
+# no clear outliers
+
+# compare the two measurements from each individual to check that they're similar
+# see if there are points far off 1:1 line
+plot(dat$leaf_water_potential_1, dat$leaf_water_potential_2, col = c("lightblue2", "coral1", "dodgerblue", "firebrick3")[dat$Treatment])
+abline(0, 1, col = 'red')
+
+# look at raw data
+cbind(dat$leaf_water_potential_1, dat$leaf_water_potential_2)
+
+# everything looks okay, lower measurements vary more
+
+```
+
+
+```{r TLP_preliminary}
+
+# look at data
+plot(dat$TLP_mpa_1, col = c("lightblue2", "coral1", "dodgerblue", "firebrick3")[dat$Treatment])
+plot(dat$TLP_mpa_2, col = c("lightblue2", "coral1", "dodgerblue", "firebrick3")[dat$Treatment])
+plot(dat$TLP_avg, col = c("lightblue2", "coral1", "dodgerblue", "firebrick3")[dat$Treatment])
+
+# compare the two measurements from each individual to check that they're similar
+# see if there are points far off 1:1 line
+plot(dat$TLP_mpa_1, dat$TLP_mpa_2, col = c("lightblue2", "coral1", "dodgerblue", "firebrick3")[dat$Treatment])
+abline(0,1, col = 'red')
+
+cbind(dat$TLP_mpa_1, dat$TLP_mpa_2)
+
+# dat$tlp_mpa_2 has an unusually high value: -0.6310
+# sample 065-13, row 8
+# let's get rid of it, make avg just the first measurement
+
+dat$TLP_mpa_2[which(dat$Tree == '065-13')] <- NA
+dat$TLP_avg[which(dat$Tree == '065-13')] <- dat$TLP_mpa_1[which(dat$Tree == '065-13')]
+
+# rerun plots above to check
+
+```
+
+
+```{r soil_WP_preliminary}
+
+# look at data
+plot(dat$soil_water_potential_1, col = c("lightblue2", "coral1", "dodgerblue", "firebrick3")[dat$Treatment])
+plot(dat$soil_water_potential_2, col = c("lightblue2", "coral1", "dodgerblue", "firebrick3")[dat$Treatment])
+plot(dat$soil_WP_avg, col = c("lightblue2", "coral1", "dodgerblue", "firebrick3")[dat$Treatment])
+
+plot(dat$soil_water_potential_1, dat$soil_water_potential_2, col = c("lightblue2", "coral1", "dodgerblue", "firebrick3")[dat$Treatment])
+abline(0,1, col = 'red')
+
+cbind(as.character(dat$Tree), dat$soil_water_potential_1, dat$soil_water_potential_2)
+
+# row 85, sample 532-12, measurement 1, is really low, measurement 2 is more normal
+# measurement 2 also more similar to other individual in same site and treatment
+dat$soil_water_potential_1[which(dat$Tree == '532-12')] <- NA
+dat$soil_WP_avg[which(dat$Tree == '532-12')] <- dat$soil_water_potential_2[which(dat$Tree == '532-12')]
+
+# recheck above plots
+
+```
+
+
+
+```{r soil_mass_preliminary}
+
+plot(dat$soil_mass_1, col = c("lightblue2", "coral1", "dodgerblue", "firebrick3")[dat$Treatment])
+plot(dat$soil_mass_2, col = c("lightblue2", "coral1", "dodgerblue", "firebrick3")[dat$Treatment])
+plot(dat$soil_mass_avg, col = c("lightblue2", "coral1", "dodgerblue", "firebrick3")[dat$Treatment])
+
+plot(dat$soil_mass_1, dat$soil_mass_2)
+abline(0, 1, col = 'red')
+
+cbind(as.character(dat$Tree), dat$soil_mass_1, dat$soil_mass_2)
+# All measurements are the same except 069-15, which is 171.4 and 255.8
+# Remove this data point since I can't tell which  measurement is right
+
+dat$soil_mass_1[which(dat$Tree == '069-15')] <- NA
+dat$soil_mass_2[which(dat$Tree == '069-15')] <- NA
+dat$soil_mass_avg[which(dat$Tree == '069-15')] <- NA
+
+```
+
+
+```{r leaf_WP-soil_WP_preliminary}
+
+# look at difference between leaf and soil water potential
+
+plot(dat$leaf_WP_avg, dat$soil_WP_avg, col = c("lightblue2", "coral1", "dodgerblue", "firebrick3")[dat$Treatment])
+abline(0,1)
+
+plot(dat$leaf_WP_avg - dat$soil_WP_avg, col = c("lightblue2", "coral1", "dodgerblue", "firebrick3")[dat$Treatment])
+abline(h=0)
+plot(dat$leaf_water_potential_1 - dat$soil_water_potential_1, col = c("lightblue2", "coral1", "dodgerblue", "firebrick3")[dat$Treatment])
+abline(h=0)
+
+dat$WP_avg_leaf_soil_diff <- c(dat$leaf_WP_avg - dat$soil_WP_avg)
+
+```
+
+
+```{r save_clean_data}
+
+# sort by latitude (most southern are first)
+dat$Site <- factor(dat$Site, levels = c("MACR", "TEJO", "HUNT", "CENT", "PLAT", "REDI"), labels = c('MC', 'FT', 'FH', 'CV', 'PL', 'RD'), ordered = T) 
+
+# save cleaned dataset
+write.table(dat, file = 'data/phys_data_cleaned.csv', quote = F, sep = ',', row.names = F)
+phys <- dat # clearer name for saving
+save(phys, file = 'data/phys_data_cleaned_dataframe.Rdata')
+
+
+```

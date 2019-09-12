@@ -1,0 +1,578 @@
+---
+title: "WGCNA analysis"
+author: "Alayna Mead"
+date: "July 20, 2018"
+output: html_document
+---
+
+```{r setup}
+
+library(WGCNA)
+library(goseq)
+library(GO.db)
+library(ComplexHeatmap)
+library(circlize)
+library(corrplot)
+
+# set strings as factors to false (as in WGCNA documentation)
+options(stringsAsFactors = FALSE)
+
+# gene expression file
+expr <- read.csv('data/gene_expression_normalized_voom_batch_effects_removed.csv', check.names = F, row.names = 1)
+expr <- t(expr)
+
+# experimental design file
+des <- read.csv('data/experiment_design.csv', header = T)
+rownames(des) <- des$sample
+des <- des[order(rownames(des)),]
+
+# traits file
+traits <- read.csv('data/phys_data_cleaned.csv')
+rownames(traits) <- traits$Tree
+# remove non-sequenced individuals
+traits <- traits[rownames(traits) %in% rownames(expr),]
+
+```
+
+
+```{r preliminary}
+
+# following tutorials:
+# labs.genetics.ucla.edu/horvath/htdocs/CoexpressionNetwork/Rpackages/WGCNA/Tutorials/Simulated-03-Preprocessing.pdf
+# labs.genetics.ucla.edu/horvath/htdocs/CoexpressionNetwork/Rpackages/WGCNA/Tutorials/FemaleLiver-01-dataInput.pdf 
+
+
+# check data
+
+# look at mean expression
+meanExpressionByArray = apply(expr, 1, mean, na.rm=T)
+par(las = 2)
+barplot(meanExpressionByArray, xlab = "Sample", ylab = "Mean expression", main ="Mean expression across samples", names.arg = rownames(expr), cex.names = 0.7)
+
+# look at clustering
+sampleTree = hclust(dist(expr), method = 'average')
+plot(sampleTree)
+
+
+```
+
+```{r remove_outliers}
+
+# 069-15 is a clustering outlier and has lower average expression - remove it
+# 214-14 is also somewhat of an outlier based on clustering
+
+# rownames(expr)
+expr <- expr[rownames(expr) != '069-15',]
+expr <- expr[rownames(expr) != '214-14',]
+rownames(expr) # check
+
+des <- des[rownames(des) != '069-15',]
+des <- des[rownames(des) != '214-14',]
+rownames(des)
+
+traits <- traits[rownames(traits) != '069-15',]
+traits <- traits[rownames(traits) != '214-14',]
+rownames(traits)
+
+```
+
+```{r choose_soft_threshold}
+
+# following tutorial:
+# horvath.genetics.ucla.edu/html/CoexpressionNetwork/Rpackages/WGCNA/Tutorials/Consensus-NetworkConstruction-auto.pdf
+
+# choose soft-threshold power to use
+
+# Choose a set of soft-thresholding powers
+powers = c(c(1:10), seq(from = 12, to=20, by=2))
+
+# Call the network topology analysis function
+sft.unsigned = pickSoftThreshold(expr, powerVector = powers, verbose = 5, networkType = 'unsigned', RsquaredCut = 0.9)
+
+sft.unsigned$powerEstimate # 7
+
+# plot
+
+par(mfrow = c(1,1))
+# Scale-free topology fit index as a function of the soft-thresholding power
+plot(sft.unsigned$fitIndices[,1], -sign(sft.unsigned$fitIndices[,3])*sft.unsigned$fitIndices[,2],
+     xlab="Soft Threshold (power)",
+     ylab="Scale Free Topology Model Fit,signed R^2",
+     type="n",
+     main = paste("Scale independence"))
+
+text(sft.unsigned$fitIndices[,1], -sign(sft.unsigned$fitIndices[,3])*sft.unsigned$fitIndices[,2], labels=powers,col="red")
+
+# this line corresponds to using an R^2 cut-off of 0.9
+abline(h = 0.9, col = 'blue')
+
+# Mean connectivity as a function of the soft-thresholding power
+plot(sft.unsigned$fitIndices[,1],
+     sft.unsigned$fitIndices[,5],
+     xlab="Soft Threshold (power)",
+     ylab="Mean Connectivity",
+     type="n",
+     main = paste("Mean connectivity"))
+text(sft.unsigned$fitIndices[,1], sft.unsigned$fitIndices[,5], labels=powers, col="red")
+
+# use soft-thresholding power of 7
+
+```
+
+```{r blockwiseModules}
+
+# This is slow and takes a lot of memory, so I actually ran it on a  server.
+# Ran as a single block as I got different results when testing it with multiple blocks.
+
+power = 7
+
+net_unsigned_merge_0.3_min_50_no_outliers <- blockwiseModules(expr, power = power, TOMType = "unsigned", minModuleSize = 50, reassignThreshold = 0, mergeCutHeight = 0.3, numericLabels = F, pamRespectsDendro = FALSE, saveTOMs = TRUE, verbose = 3, maxBlockSize = Inf, nThreads = 7, saveTOMFileBase = "blockwiseTOM_net_unsigned_merge_0.3_min_50_no_outliers")
+
+# make network file prettier
+names(net$colors) <- colnames(expr) # add gene names
+colnames(net$MEs) <- gsub('ME', '', colnames(net$MEs)) # change module names
+rownames(net$MEs) <- rownames(expr) # add sample names
+
+```
+
+```{r load_network}
+
+# load WGCNA network output file produced from 'blockwiseModules' code chunk above
+load('data/wgcna_results_net_unsigned_merge_0.3_min_50.Rdata')
+
+```
+
+```{r correlation_and_cluster_plot}
+
+# trait data set up for correlations with modules - eg populations are binary variables
+traits <- read.csv('data/traits_wgcna.csv', row.names = 1)
+traits <- traits[rownames(traits) != '214-14',]
+
+# get traits we want
+colnames(traits)
+traits <- traits[,c(1,5:24)]
+
+# following tutorial:
+# horvath.genetics.ucla.edu/html/CoexpressionNetwork/Rpackages/WGCNA/Tutorials/Consensus-RelateModsToTraits.pdf
+
+# dendrogram and color plot
+#png(file = 'plots/module_colors_dendrogram.png', res = 300, width = 12, height = 7, units = 'in')
+plotDendroAndColors(net$dendrograms[[1]], net$colors[net$blockGenes[[1]]], "Module colors", dendroLabels = FALSE, hang = 0.03, addGuide = TRUE, guideHang = 0.05)
+#dev.off()
+
+
+# trait/module expression correlation plot
+
+# reorder traits
+colnames(traits)
+traits.order <- c(1,7,10:12,18,21,17,16,19,20,13:15,2:6,8,9)
+colnames(traits)[traits.order]
+
+# get correlations and p-vals
+moduleTraitCor = cor(net$MEs, traits[,traits.order], use = 'p')
+moduleTraitPvalue = corPvalueStudent(moduleTraitCor, nrow(traits))
+
+# plot
+
+# Will display correlations and their p-values
+textMatrix = paste(signif(moduleTraitCor, 2), "\n(", signif(moduleTraitPvalue, 1), ")", sep = ""); dim(textMatrix) = dim(moduleTraitCor)
+# nice names
+xlab = c('Treatment', 'Height', 'Largest Leaf Length', 'Largest Leaf Width', ' Largest Leaf Thickness', 'Average Leaf Thickness', 'Turgor Loss Point', 'Leaf Area', "Leaf Dry Mass", 'Soil Mass', 'Soil Water Potential', 'Leaf Water Potential', 'Latitude', 'Longitude', 'Elevation (m)', 'Site: CV', 'Site: FH', 'Site: MC', 'Site: PL', 'Site: RD', 'Site: FT' )
+
+cbind(colnames(traits), xlab) # check that they match
+
+
+# Display the correlation values within a heatmap plot
+#png(file = 'plots/module-trait_relationships.png', width = 10, height = 8, res = 300, units = 'in')
+par(mar = c(8, 9, 3, 3), mfrow = c(1,1))
+labeledHeatmap(Matrix = moduleTraitCor, xLabels = xlab[traits.order], yLabels = paste('ME', names(net$MEs), sep = ''), ySymbols = names(net$MEs), colorLabels = F, colors = blueWhiteRed(50), textMatrix = textMatrix, setStdMargins = F, cex.text = 0.5, zlim = c(-1,1), main = 'Module-Trait Relationships', checkColorsValid = T)
+
+#dev.off()
+
+
+```
+
+```{r go_enrichment}
+
+# Identify module functions by testing for enrichment of GO terms for genes in modules
+
+# data
+
+# go.all.list
+load('data/all_genes_and_GO_terms_R_list.Rdata')
+# gene.lens.seq
+load('data/gene_lengths_sequenced_genes_only.Rdata')
+
+cols <- net$colors
+
+# set up vector of presences/absence of gene in each module
+mod_vectors <- list()
+
+for(n in 1:length(unique(cols))){
+  
+  col <- unique(cols)[n]
+  mod_vectors[[n]] <- as.integer(cols == col)
+  names(mod_vectors[[n]]) <- names(cols)
+  
+}
+
+names(mod_vectors) <- unique(cols)
+
+# run GOseq to look for overrepresentation in each module
+
+go.results <- list()
+
+for(n in 1:length(mod_vectors)){
+  pwf <- nullp(DEgenes =  mod_vectors[[n]], bias.data = gene.lens.seq)
+  go.results[[n]] <- goseq(pwf, gene2cat = go.all.list)
+}
+
+names(go.results) <- names(mod_vectors)
+
+
+# pval adjustment - only adjust p-values for either
+# over or underrepresentation for each GO term, whichever
+# has lowest p-value
+
+for(n in 1:length(go.results)){
+  
+  go.results[[n]]$adjusted_over_represented_pvalue <- NA
+  go.results[[n]]$adjusted_under_represented_pvalue <- NA
+  
+  # get index for GO terms which are more likely to be 
+  # over or underrepresented
+  over.index <- which(go.results[[n]]$over_represented_pvalue <= go.results[[n]]$under_represented_pvalue)
+  under.index <- which(go.results[[n]]$over_represented_pvalue >= go.results[[n]]$under_represented_pvalue)
+  
+  # adjust pvalues for GO terms with the above indices
+  go.results[[n]]$adjusted_over_represented_pvalue[over.index] <- p.adjust(go.results[[n]]$over_represented_pvalue[over.index], method = 'BH')
+  go.results[[n]]$adjusted_under_represented_pvalue[under.index] <- p.adjust(go.results[[n]]$under_represented_pvalue[under.index], method = 'BH')
+  
+}
+
+# look at pvalue distributions
+
+par(mfrow = c(2,2))
+for(n in 1:length(go.results)){
+  hist(go.results[[n]]$over_represented_pvalue, main = names(go.results)[n], breaks = 20)
+  hist(go.results[[n]]$under_represented_pvalue, breaks = 20, main = '')
+  
+  over.index <- which(go.results[[n]]$over_represented_pvalue <= go.results[[n]]$under_represented_pvalue)
+  under.index <- which(go.results[[n]]$over_represented_pvalue >= go.results[[n]]$under_represented_pvalue)
+  
+  hist(go.results[[n]]$over_represented_pvalue[over.index], breaks = 20, main = '')
+  hist(go.results[[n]]$under_represented_pvalue[under.index], breaks = 20, main = '')
+  
+}
+
+
+# output results to tab separated file
+# (don't use csv because some GO terms have commas)
+for(n in 1:length(go.results)){
+  
+  write.table(go.results[[n]], file = paste('output/GOseq_results_', names(go.results)[n], '_module.txt', sep = ''), sep = '\t', col.names = T, row.names = F, quote = F)
+  
+}
+
+```
+
+
+```{r module_expression_lm}
+
+# sort modules alphabetically
+net$MEs <- net$MEs[,order(colnames(net$MEs))]
+head(net$MEs)
+
+# run linear model to test for population, treatment, and interaction effects for module expression for each module
+
+lm.results <- list()
+
+for(m in 1:ncol(net$MEs)){
+    lm.results[[m]] <- list(anova(lm(net$MEs[,m] ~ des$site*des$treatment)))
+  }
+names(lm.results) <- colnames(net$MEs)
+
+save(lm.results, file = 'output/lm_results_module_expression_sitextreatment.Rdata')
+
+```
+
+
+```{r GxE_plots}
+
+# make GxE plots with average expression level for each site
+
+des$site <- factor(des$site, levels = c('MACR', 'TEJO', 'HUNT', 'CENT', 'PLAT', 'REDI'), labels = c('MC', 'FT', 'FH', 'CV', 'PL', 'RD'))
+des$site
+
+# population colors
+cols <- c("#ffe55c", "#ff8b4e", "#e14d66", "#9c2e7f", "#5f0092", "#000262")
+
+# function for GxE plots
+
+gxe_plot <- function(expr.df, mod, sites = c('MACR', 'TEJO', 'HUNT', 'CENT', 'PLAT', 'REDI'), cols = c("#ffe55c", "#ff8b4e", "#e14d66", "#9c2e7f", "#5f0092", "#000262"), main = mod, legendsize = 0.8, legend = T, lty = rep(1,6), lwd = 6, ...){
+  ex <- expr.df[,mod]
+  names(ex) <- rownames(expr.df)
+  ex.site <- as.data.frame(matrix(nrow = 6, ncol = 6))
+  rownames(ex.site) <- sites
+  colnames(ex.site) <- c('mean.c', 'mean.d', 'median.c', 'median.d', 'sd.c', 'sd.d')
+  
+  for(n in 1:length(sites)){
+    # get list of control samples for each site
+    samples.c <- des$sample[des$site == sites[n] & des$treatment == 'control1']
+    ex.site[n,1] <- mean(as.numeric(ex[as.character(samples.c)]))
+    ex.site[n,3] <- median(as.numeric(ex[as.character(samples.c)]))
+    ex.site[n,5] <- sd(as.numeric(ex[as.character(samples.c)]))
+    
+    # get list of drought samples for each site
+    samples.d <- des$sample[des$site == sites[n] & des$treatment == 'drought1'] 
+    ex.site[n,2] <- mean(as.numeric(ex[as.character(samples.d)]))
+    ex.site[n,4] <- median(as.numeric(ex[as.character(samples.d)]))
+    ex.site[n,6] <- sd(as.numeric(ex[as.character(samples.d)]))
+  }
+   
+  min = min(c(ex.site$mean.c, ex.site$mean.d) - 0.05*abs(max(c(ex.site$mean.c, ex.site$mean.d) - min(c(ex.site$mean.c, ex.site$mean.d)))))
+  max = max(c(ex.site$mean.c, ex.site$mean.d) + 0.05*abs(max(c(ex.site$mean.c, ex.site$mean.d) - min(c(ex.site$mean.c, ex.site$mean.d)))))
+ 
+  
+  plot(c(ex.site$mean.c[1], ex.site$mean.d[1]), type = 'l', ylim = c(min,max), col = cols[1], xlab = '', ylab = 'Module Expression', main = main, xaxt="n", lty = lty[1], lwd = lwd, ...)
+  axis(1, labels = c('Control', 'Treatment'), at = c(1,2))
+  lines(c(ex.site$mean.c[2], ex.site$mean.d[2]), col = cols[2], lwd = lwd, lty = lty[2])
+  lines(c(ex.site$mean.c[3], ex.site$mean.d[3]), col = cols[3], lwd = lwd, lty = lty[3])
+  lines(c(ex.site$mean.c[4], ex.site$mean.d[4]), col = cols[4], lwd = lwd, lty = lty[4])
+  lines(c(ex.site$mean.c[5], ex.site$mean.d[5]), col = cols[5], lwd = lwd, lty = lty[5])
+  lines(c(ex.site$mean.c[6], ex.site$mean.d[6]), col = cols[6], lwd = lwd, lty = lty[6])
+  if(legend == T){
+    legend(x = 'top', fill = cols, legend = sites, horiz = T, cex = legendsize)
+  }
+}
+
+par(mfrow = c(1,1), mar = c(5,4,4,1)+0.1, las = 1)
+
+# plot single module:
+# gxe_plot(expr.df = net$MEs, mod = 'darkgreen', sites = levels(des$site), lty = c(1:6),  main = 'darkgreen\n(description)')
+
+#plot GxE plots for all modules
+for(n in 1:ncol(net$MEs)){
+  mod <- colnames(net$MEs)[n]
+  png(filename = paste('plots/module_GxE_', mod, '.png', sep = ''), res = 300, width = 7, height = 6, units = 'in')
+  par(mfrow = c(1,1), mar = c(5,4,4,1)+0.1, las = 1)
+  gxe_plot(expr.df = net$MEs, mod = mod, sites = levels(des$site))
+  dev.off()
+}
+
+# get list of modules with significant site, treatment, and interaction effects
+mod.s <- vector()
+mod.t <- vector()
+mod.i <- vector()
+
+for(n in 1:length(lm.results)){
+  
+  # site
+  if(lm.results[[n]][[1]][1,5] <= 0.05){
+    mod.s <- append(mod.s, names(lm.results)[n])
+  }
+  # treatment
+  if(lm.results[[n]][[1]][2,5] <= 0.05){
+    mod.t <- append(mod.t, names(lm.results)[n])
+  }
+  # interaction
+  if(lm.results[[n]][[1]][3,5] <= 0.05){
+    mod.i <- append(mod.i, names(lm.results)[n])
+  }
+}
+
+mod.s # "grey60" "purple" "red"    "yellow"
+mod.t # "black"     "brown"     "darkgreen" "grey"      "grey60"    "pink"
+mod.i # "blue"         "darkgreen"    "greenyellow"  "midnightblue" "pink" "yellow" 
+
+# remove grey, not a real module
+mod.t <- mod.t[which(mod.t != 'grey')]
+
+# plot all significant modules
+length(unique(c(mod.s, mod.i, mod.t)))
+# 11
+
+# order by significant effects
+mods <- c('purple', 'red', 'black', 'brown', 'grey60', 'blue', 'darkgreen', 'greenyellow', 'midnightblue', 'pink', 'yellow') 
+# add description to title
+desc <- c('photosynthesis', 'chloroplast', 'response to stress', '', 'protein folding', 'chloroplast', 'ribosome', 'DNA replication', '', 'kinase activity',  'oxidoreductase activity')
+
+# plot!
+#png(file = 'plots/GxE_modules_all_significant_revised.png', width = 12, height = 7.5, res = 300, units = 'in')
+
+par(mfrow = c(3,4), mar = c(3,5,4,1.5), cex.main = 1.8, cex.axis = 1.5, cex.lab = 1.5, las = 1, mgp = c(3,.7,0))
+for(n in 1:length(mods)){
+  mod <- mods[n]
+  gxe_plot(expr.df = net$MEs, mod = mod, sites = levels(des$site), lwd = 4.5, lty = c(1:6), legend = F, main = paste(mods[n], '\n', desc[n], sep = ''))
+  
+  # add text showing significant effects
+  # get which are significant
+  txt <- sapply(list(mod.s, mod.t, mod.i), function(X) mod %in% X)
+  # get pvals
+  p <- lm.results[[mod]][[1]]$`Pr(>F)`
+  # vector for what to print
+  toprint <- vector()
+  
+  # population
+  if (txt[1] == T){
+    if(p[1] <= 0.05) {pstar <- '*'}
+    if(p[1] <= 0.01) {pstar <- '**'}
+    if(p[1] <= 0.001){pstar <- '***'}
+    toprint <- paste(c(pstar, 'Population'), collapse = ' ')
+  }
+  
+   # treatment
+  if (txt[2] == T){
+    if(p[2] <= 0.05) {pstar <- '*'}
+    if(p[2] <= 0.01) {pstar <- '**'}
+    if(p[2] <= 0.001){pstar <- '***'}
+    toprint <- append(toprint, paste(c(pstar, 'Treatment'), collapse = ' '))
+  }
+  
+  # population x treatment
+  if (txt[3] == T){
+    if(p[3] <= 0.05) {pstar <- '*'}
+    if(p[3] <= 0.01) {pstar <- '**'}
+    if(p[3] <= 0.001){pstar <- '***'}
+    toprint <- append(toprint, paste(c(pstar, 'Population x Treatment'), collapse = ' '))
+  }
+  
+  legend('topleft', legend = toprint, bg = rgb(1,1,1,0.7), cex = 1.2)
+  
+}
+
+# add legend
+plot.new()
+legend(x = 'left', col = cols, lty = c(1:6), lwd = 4.5, legend = levels(des$site), horiz = F, cex = 1.8, title = 'Population', ncol = 2)
+
+#dev.off()
+
+```
+
+```{r heatmap}
+
+# plot heatmap of average expression differences between control/treatment for each population
+
+# data
+des$interaction <- interaction(des$treatment, des$site)
+
+# make df with avg module expression by site and treatment
+me.avg <- as.data.frame(matrix(nrow = ncol(net$MEs), ncol = 12))
+colnames(me.avg) <- levels(des$interaction)
+rownames(me.avg) <- colnames(net$MEs)
+
+for(mod in 1:ncol(net$MEs)){
+ 
+  for(group in 1:length(levels(des$interaction))){
+    g <- levels(des$interaction)[group]
+    me.avg[mod, group] <- mean(net$MEs[which(des$interaction == g), mod])
+  }
+}
+
+# use only treatment and interaction modules
+me.avg <- me.avg[unique(c(mod.i, mod.t)),]
+
+# looking at treatment differences
+colnames(me.avg)
+me.avg.diff <- me.avg[,c(2,4,6,8,10,12)] - me.avg[,c(1,3,5,7,9,11)]
+colnames(me.avg.diff) <- gsub('drought1.', '', colnames(me.avg.diff))
+
+cols <- colorRamp2(breaks = as.vector(quantile(unlist(me.avg.diff))), colors = c('darkslateblue', 'lightcyan2', 'white', 'mistyrose','firebrick3'))
+
+# to include functions
+rownames(me.avg.diff) <- c("blue\n(chloroplast)\nPxT *", "darkgreen\n(ribosome)\nT***, PxT**", "greenyellow\n(DNA replication)\nPxT*", "midnightblue\n―\nPxT*", "pink\n(kinase activity)\nT**, PxT*", "yellow\n(oxidoreductase activity)\nP*, PxT*", "black\n(response to stress)\nT***", "brown\n―\nT*", "grey60\n(protein folding)\nP*, T***")
+
+# to add population colors
+cols.top <- as.list(c("#ffe55c", "#ff8b4e", "#e14d66", "#9c2e7f", "#5f0092", "#000262"))
+names(cols.top) <- colnames(me.avg.diff)
+top <- HeatmapAnnotation(Population = colnames(me.avg.diff), col = list(Population = c('MC' =  '#ffe55c', 'FT' = '#ff8b4e', 'FH' = '#e14d66', 'CV' = '#9c2e7f', 'PL' = '#5f0092', 'RD' = '#000262')), annotation_legend_param = list(title='\nPopulation'))
+
+
+#png(file = 'plots/module_expression_avg_change_heatmap_with_functions.png', res = 300, height = 5.5, width = 7.5, units = 'in')
+Heatmap(me.avg.diff,
+        cluster_columns = T,
+        cluster_rows = T,
+        col = cols,
+        row_names_side = 'left',
+        column_names_side = 'top',
+        heatmap_legend_param = list(title = 'Average\nExpression\nDifference'),
+        top_annotation = top,
+        column_title_gp = gpar(fontsize = 14))
+#dev.off()
+
+```
+
+
+```{r compare_modules}
+
+# look at relationships between modules in expression
+
+par(mfrow = c(1,1))
+#png(file = 'plots/correlation_plot_all_modules.png', width = 7, height = 7, res = 300, units = 'in')
+corrplot(cor(net$MEs, method = 'pearson'), method = 'ellipse', tl.col = 'black')
+#dev.off()
+
+# significant modules
+m <- unique(c(mod.s, mod.t, mod.i))
+
+#png(file = 'correlation_plot_sig_modules.png', width = 6, height = 6, res = 300, units = 'in')
+corrplot(cor(net$MEs[m], method = 'pearson'), method = 'ellipse', tl.col = 'black')
+#dev.off()
+       
+```
+
+```{r hub_genes}
+
+# Look at hub genes - genes with high module membership
+
+# get gene info ('gene.info')
+# df with genes as rownames, with TAIR and Pfam ID and info as columns
+load('data/gene_Pfam_and_TAIR_info_dataframe.Rdata')
+
+# This gives the module membership for each gene, which is just the correlation of the gene expression with the eigengene expression (may be positive or negative)
+
+kme <- signedKME(expr, net$MEs, outputColumnName = '')
+colnames(kme) <- colnames(net$MEs)
+
+# for each module, output list of genes, with gene info,
+#sorted by module membership to identify hub genes
+
+mod.genes <- list()
+
+for(n in 1:ncol(net$MEs)){
+  
+  mod <- colnames(net$MEs)[n]
+  ngenes <- sum(net$colors == mod)
+  genes <- names(net$colors[net$colors == mod])
+  # make dataframe for gene info
+  genes.df <- as.data.frame(matrix(nrow = ngenes, ncol = 6))
+  colnames(genes.df) <- c('module_membership', colnames(gene.info))
+  rownames(genes.df) <- genes
+  # add module membership
+  genes.df[,1] <- kme[genes, mod]
+  # add gene info
+  genes.df[,2:6] <- gene.info[genes,]
+  # sort by high module membership
+  genes.df <- genes.df[order(abs(genes.df$module_membership), decreasing = T),]
+  # output
+  mod.genes[[n]] <- genes.df
+  
+}
+
+names(mod.genes) <- colnames(net$MEs)
+
+
+# output as tab-separated text files
+
+for(n in 1:length(mod.genes)){
+  
+  # reformat
+  out <- mod.genes[[n]]
+  out$gene <- rownames(out)
+  out <- out[,c(7, 1:6)]
+  
+  write.table(out, file = paste('output/gene_module_membership_', names(mod.genes)[n], '.txt', sep = ''), sep = '\t', quote = F, row.names = F)
+  
+}
+
+```
